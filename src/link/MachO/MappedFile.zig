@@ -14,7 +14,7 @@ const File = fs.File;
 tag: Tag,
 raw: union {
     mmap: []align(mem.page_size) const u8,
-    malloc: []align(8) const u8,
+    malloc: []const u8,
 },
 offset: u64 = 0,
 
@@ -53,7 +53,8 @@ fn malloc(gpa: Allocator, file: File, length: usize, offset: u64) Error!MappedFi
     if (offset > 0) {
         try file.seekTo(offset);
     }
-    const raw = try gpa.allocWithOptions(u8, length, 8, null);
+    const raw = try gpa.alloc(u8, length);
+    errdefer gpa.free(raw);
     const amt = try reader.readAll(raw);
     if (amt != length) {
         return error.InputOutput;

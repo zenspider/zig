@@ -102,10 +102,10 @@ pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch)
             },
             .SYMTAB => {
                 const symtab = cmd.cast(macho.symtab_command).?;
-                self.in_symtab = @ptrCast(
-                    [*]const macho.nlist_64,
-                    @alignCast(@alignOf(macho.nlist_64), &data[symtab.symoff]),
-                )[0..symtab.nsyms];
+                self.in_symtab = @alignCast(@alignOf(macho.nlist_64), @ptrCast(
+                    [*]align(1) const macho.nlist_64,
+                    data.ptr + symtab.symoff,
+                ))[0..symtab.nsyms];
                 self.in_strtab = data[symtab.stroff..][0..symtab.strsize];
                 try self.symtab.appendSlice(allocator, self.in_symtab);
             },
@@ -305,10 +305,10 @@ pub fn splitIntoAtomsOneShot(self: *Object, macho_file: *MachO, object_id: u32) 
         const code: ?[]const u8 = if (!sect.isZerofill()) try self.getSectionContents(sect) else null;
 
         // Read section's list of relocations
-        const relocs = @ptrCast(
-            [*]const macho.relocation_info,
-            @alignCast(@alignOf(macho.relocation_info), &self.data.slice()[sect.reloff]),
-        )[0..sect.nreloc];
+        const relocs = @alignCast(@alignOf(macho.relocation_info), @ptrCast(
+            [*]align(1) const macho.relocation_info,
+            self.data.slice().ptr + sect.reloff,
+        ))[0..sect.nreloc];
 
         // Symbols within this section only.
         const filtered_syms = filterSymbolsByAddress(
@@ -552,10 +552,10 @@ pub fn parseDataInCode(self: Object) ?[]const macho.data_in_code_entry {
             .DATA_IN_CODE => {
                 const dice = cmd.cast(macho.linkedit_data_command).?;
                 const ndice = @divExact(dice.datasize, @sizeOf(macho.data_in_code_entry));
-                return @ptrCast(
-                    [*]const macho.data_in_code_entry,
-                    @alignCast(@alignOf(macho.data_in_code_entry), &data[dice.dataoff]),
-                )[0..ndice];
+                return @alignCast(@alignOf(macho.data_in_code_entry), @ptrCast(
+                    [*]align(1) const macho.data_in_code_entry,
+                    data.ptr + dice.dataoff,
+                ))[0..ndice];
             },
             else => {},
         }

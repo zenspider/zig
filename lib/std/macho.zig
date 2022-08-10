@@ -1859,7 +1859,7 @@ pub const LoadCommandIterator = struct {
 
         pub fn cast(lc: LoadCommand, comptime Cmd: type) ?Cmd {
             if (lc.data.len < @sizeOf(Cmd)) return null;
-            return @ptrCast(*const Cmd, @alignCast(@alignOf(Cmd), &lc.data[0])).*;
+            return @ptrCast(*align(1) const Cmd, lc.data.ptr).*;
         }
 
         /// Asserts LoadCommand is of type segment_command_64.
@@ -1867,10 +1867,10 @@ pub const LoadCommandIterator = struct {
             const segment_lc = lc.cast(segment_command_64).?;
             if (segment_lc.nsects == 0) return &[0]section_64{};
             const data = lc.data[@sizeOf(segment_command_64)..];
-            const sections = @ptrCast(
-                [*]const section_64,
-                @alignCast(@alignOf(section_64), &data[0]),
-            )[0..segment_lc.nsects];
+            const sections = @alignCast(@alignOf(section_64), @ptrCast(
+                [*]align(1) const section_64,
+                data.ptr,
+            ))[0..segment_lc.nsects];
             return sections;
         }
 
@@ -1892,10 +1892,7 @@ pub const LoadCommandIterator = struct {
     pub fn next(it: *LoadCommandIterator) ?LoadCommand {
         if (it.index >= it.ncmds) return null;
 
-        const hdr = @ptrCast(
-            *const load_command,
-            @alignCast(@alignOf(load_command), &it.buffer[0]),
-        ).*;
+        const hdr = @ptrCast(*align(1) const load_command, it.buffer.ptr).*;
         const cmd = LoadCommand{
             .hdr = hdr,
             .data = it.buffer[0..hdr.cmdsize],

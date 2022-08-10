@@ -124,7 +124,7 @@ pub fn parseFromBinary(
     dylib_id: u16,
     dependent_libs: anytype,
     name: []const u8,
-    data: []align(@alignOf(u64)) const u8,
+    data: []const u8,
 ) !void {
     var stream = std.io.fixedBufferStream(data);
     const reader = stream.reader();

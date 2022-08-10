@@ -1494,7 +1494,7 @@ pub fn parseDylib(
     try file.seekTo(fat_offset);
     file_size -= fat_offset;
 
-    const data = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
+    const data = try file.readToEndAlloc(gpa, file_size);
     defer gpa.free(data);
 
     const dylib_id = @intCast(u16, self.dylibs.items.len);
