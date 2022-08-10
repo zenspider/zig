@@ -1842,7 +1842,7 @@ pub const data_in_code_entry = extern struct {
 
 pub const LoadCommandIterator = struct {
     ncmds: usize,
-    buffer: []align(@alignOf(u64)) const u8,
+    buffer: []const u8,
     index: usize = 0,
 
     pub const LoadCommand = struct {
@@ -1901,7 +1901,7 @@ pub const LoadCommandIterator = struct {
             .data = it.buffer[0..hdr.cmdsize],
         };
 
-        it.buffer = @alignCast(@alignOf(u64), it.buffer[hdr.cmdsize..]);
+        it.buffer = it.buffer[hdr.cmdsize..];
         it.index += 1;
 
         return cmd;
