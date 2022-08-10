@@ -5,6 +5,7 @@ const assert = std.debug.assert;
 const fs = std.fs;
 const log = std.log.scoped(.link);
 const macho = std.macho;
+const math = std.math;
 const mem = std.mem;
 
 const Allocator = mem.Allocator;
@@ -213,8 +214,9 @@ pub fn parseObject(
         .Name => 0,
         .Length => |len| len,
     };
+    const object_off = math.cast(usize, try reader.context.getPos()) orelse return error.Overflow;
     const object_size = (try object_header.size()) - object_name_len;
-    const data = try MappedFile.mapWithOptions(allocator, self.file, object_size, try reader.context.getPos());
+    const data = try MappedFile.mapWithOptions(allocator, self.file, object_size, object_off);
     errdefer data.unmap(allocator);
 
     var object = Object{

@@ -1,7 +1,13 @@
+//! Memory mapping utility for large files.
+//! Its intended use is to map input object files into memory using `mmap` on supported
+//! hosts with a fallback to `malloc` in case the former fails or is unsupported (e.g.,
+//! on Windows).
+
 const MappedFile = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
+const assert = std.debug.assert;
 const log = std.log.scoped(.mapped_file);
 const fs = std.fs;
 const math = std.math;
@@ -13,13 +19,19 @@ const File = fs.File;
 
 tag: Tag,
 raw: union {
+    /// Backing memory when mapped directly with `mmap`
     mmap: []align(mem.page_size) const u8,
+    /// Backing memory when allocated with `malloc`
     malloc: []const u8,
 },
-offset: u64 = 0,
+/// Offset into `mmap`ed memory to account for the requirement for
+/// the mapped memory to be page size aligned
+offset: usize = 0,
 
 const Tag = enum {
+    /// Uses `mmap`
     mmap,
+    /// Uses `malloc`
     malloc,
 };
 
@@ -29,12 +41,17 @@ const Error = error{
     OutOfMemory,
 } || os.MMapError || os.SeekError || os.ReadError;
 
+/// Maps the entire file using either `mmap` (preferred), or `malloc` (if the former
+/// fails and/or is unavailable).
+/// Needs to be free'd using `unmap`.
 pub fn map(gpa: Allocator, file: File) Error!MappedFile {
     const file_len = math.cast(usize, try file.getEndPos()) orelse return error.Overflow;
     return mapWithOptions(gpa, file, file_len, 0);
 }
 
-pub fn mapWithOptions(gpa: Allocator, file: File, length: usize, offset: u64) Error!MappedFile {
+/// Same as `map` however allows to specify the requested mapped length as well as start offset.
+/// Note that offset is will be backwards aligned to the first available page boundary.
+pub fn mapWithOptions(gpa: Allocator, file: File, length: usize, offset: usize) Error!MappedFile {
     if (length == 0) {
         return error.InputOutput;
     }
@@ -48,7 +65,7 @@ pub fn mapWithOptions(gpa: Allocator, file: File, length: usize, offset: u64) Er
     };
 }
 
-fn malloc(gpa: Allocator, file: File, length: usize, offset: u64) Error!MappedFile {
+fn malloc(gpa: Allocator, file: File, length: usize, offset: usize) Error!MappedFile {
     const reader = file.reader();
     if (offset > 0) {
         try file.seekTo(offset);
@@ -65,8 +82,9 @@ fn malloc(gpa: Allocator, file: File, length: usize, offset: u64) Error!MappedFi
     };
 }
 
-fn mmap(file: File, length: usize, offset: u64) Error!MappedFile {
-    const aligned_offset = mem.alignBackwardGeneric(u64, offset, mem.page_size);
+fn mmap(file: File, length: usize, offset: usize) Error!MappedFile {
+    const aligned_offset = math.cast(usize, mem.alignBackwardGeneric(u64, offset, mem.page_size)) orelse
+        return error.Overflow;
     const adjusted_length = length + (offset - aligned_offset);
     // Mold is using os.PROT.READ | os.PROT.WRITE together with os.MAP.PRIVATE most likely
     // because it is overwriting the mapped memory with some adjusted metadata when parsing
@@ -86,13 +104,20 @@ fn mmap(file: File, length: usize, offset: u64) Error!MappedFile {
     };
 }
 
+/// Call to unmap/deallocate mapped memory.
 pub fn unmap(mf: MappedFile, gpa: Allocator) void {
-    switch (mf.tag) {
+    if (builtin.os.tag == .windows) {
+        assert(mf.tag == .malloc);
+        gpa.free(mf.raw.malloc);
+    } else switch (mf.tag) {
         .mmap => os.munmap(mf.raw.mmap),
         .malloc => gpa.free(mf.raw.malloc),
     }
 }
 
+/// Returns the mapped memory.
+/// In case of `mmap`, it takes into account backwards aligned `offset` and thus it is not required
+/// to adjust the slice as it is done automatically for the caller.
 pub fn slice(mf: MappedFile) []const u8 {
     return switch (mf.tag) {
         .mmap => mf.raw.mmap[mf.offset..],
