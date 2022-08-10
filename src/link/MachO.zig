@@ -1456,14 +1456,6 @@ fn parseArchive(self: *MachO, path: []const u8, force_load: bool) !bool {
     return true;
 }
 
-const ParseDylibError = error{
-    OutOfMemory,
-    EmptyStubFile,
-    MismatchedCpuArchitecture,
-    UnsupportedCpuArchitecture,
-    EndOfStream,
-} || fs.File.OpenError || std.os.PReadError || Dylib.Id.ParseError;
-
 const DylibCreateOpts = struct {
     syslibroot: ?[]const u8,
     id: ?Dylib.Id = null,
@@ -1472,12 +1464,12 @@ const DylibCreateOpts = struct {
     weak: bool = false,
 };
 
-pub fn parseDylib(
+fn parseDylib(
     self: *MachO,
     path: []const u8,
     dependent_libs: anytype,
     opts: DylibCreateOpts,
-) ParseDylibError!bool {
+) !bool {
     const gpa = self.base.allocator;
     const file = fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
@@ -1491,11 +1483,10 @@ pub fn parseDylib(
     const reader = file.reader();
     const fat_offset = math.cast(usize, try fat.getLibraryOffset(reader, cpu_arch)) orelse
         return error.Overflow;
-    try file.seekTo(fat_offset);
     file_size -= fat_offset;
 
-    const data = try file.readToEndAlloc(gpa, file_size);
-    defer gpa.free(data);
+    const data = try MappedFile.mapWithOptions(gpa, file, file_size, fat_offset);
+    defer data.unmap(gpa);
 
     const dylib_id = @intCast(u16, self.dylibs.items.len);
     var dylib = Dylib{ .weak = opts.weak };

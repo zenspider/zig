@@ -15,6 +15,7 @@ const CrossTarget = std.zig.CrossTarget;
 const LibStub = @import("../tapi.zig").LibStub;
 const LoadCommandIterator = macho.LoadCommandIterator;
 const MachO = @import("../MachO.zig");
+const MappedFile = @import("../MappedFile.zig");
 
 id: ?Id = null,
 weak: bool = false,
@@ -124,9 +125,10 @@ pub fn parseFromBinary(
     dylib_id: u16,
     dependent_libs: anytype,
     name: []const u8,
-    data: []const u8,
+    data: MappedFile,
 ) !void {
-    var stream = std.io.fixedBufferStream(data);
+    const slice = data.slice();
+    var stream = std.io.fixedBufferStream(slice);
     const reader = stream.reader();
 
     log.debug("parsing shared library '{s}'", .{name});
@@ -151,17 +153,18 @@ pub fn parseFromBinary(
     const should_lookup_reexports = header.flags & macho.MH_NO_REEXPORTED_DYLIBS == 0;
     var it = LoadCommandIterator{
         .ncmds = header.ncmds,
-        .buffer = data[@sizeOf(macho.mach_header_64)..][0..header.sizeofcmds],
+        .buffer = slice[@sizeOf(macho.mach_header_64)..][0..header.sizeofcmds],
     };
     while (it.next()) |cmd| {
         switch (cmd.cmd()) {
             .SYMTAB => {
                 const symtab_cmd = cmd.cast(macho.symtab_command).?;
+                // SYMTAB in a final binary file (exe or lib) has to be aligned in file
                 const symtab = @ptrCast(
                     [*]const macho.nlist_64,
-                    @alignCast(@alignOf(macho.nlist_64), &data[symtab_cmd.symoff]),
+                    @alignCast(@alignOf(macho.nlist_64), slice.ptr + symtab_cmd.symoff),
                 )[0..symtab_cmd.nsyms];
-                const strtab = data[symtab_cmd.stroff..][0..symtab_cmd.strsize];
+                const strtab = slice[symtab_cmd.stroff..][0..symtab_cmd.strsize];
 
                 for (symtab) |sym| {
                     const add_to_symtab = sym.ext() and (sym.sect() or sym.indr());
