@@ -33,6 +33,7 @@ const Compilation = @import("../Compilation.zig");
 const Dwarf = File.Dwarf;
 const Dylib = @import("MachO/Dylib.zig");
 const File = link.File;
+const MappedFile = @import("MachO/MappedFile.zig");
 const Object = @import("MachO/Object.zig");
 const LibStub = @import("tapi.zig").LibStub;
 const Liveness = @import("../Liveness.zig");
@@ -1382,14 +1383,13 @@ fn parseObject(self: *MachO, path: []const u8) !bool {
         const stat = file.stat() catch break :mtime 0;
         break :mtime @intCast(u64, @divFloor(stat.mtime, 1_000_000_000));
     };
-    const file_stat = try file.stat();
-    const file_size = math.cast(usize, file_stat.size) orelse return error.Overflow;
-    const contents = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
+    const data = try MappedFile.map(gpa, file);
+    errdefer data.unmap(gpa);
 
     var object = Object{
         .name = name,
         .mtime = mtime,
-        .contents = contents,
+        .data = data,
     };
 
     object.parse(gpa, cpu_arch) catch |err| switch (err) {
@@ -1486,8 +1486,7 @@ pub fn parseDylib(
     defer file.close();
 
     const cpu_arch = self.base.options.target.cpu.arch;
-    const file_stat = try file.stat();
-    var file_size = math.cast(usize, file_stat.size) orelse return error.Overflow;
+    var file_size = math.cast(usize, try file.getEndPos()) orelse return error.Overflow;
 
     const reader = file.reader();
     const fat_offset = math.cast(usize, try fat.getLibraryOffset(reader, cpu_arch)) orelse
@@ -1495,8 +1494,8 @@ pub fn parseDylib(
     try file.seekTo(fat_offset);
     file_size -= fat_offset;
 
-    const contents = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
-    defer gpa.free(contents);
+    const data = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
+    defer gpa.free(data);
 
     const dylib_id = @intCast(u16, self.dylibs.items.len);
     var dylib = Dylib{ .weak = opts.weak };
@@ -1507,7 +1506,7 @@ pub fn parseDylib(
         dylib_id,
         dependent_libs,
         path,
-        contents,
+        data,
     ) catch |err| switch (err) {
         error.EndOfStream, error.NotDylib => {
             try file.seekTo(0);

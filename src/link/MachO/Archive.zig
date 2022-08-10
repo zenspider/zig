@@ -8,6 +8,7 @@ const macho = std.macho;
 const mem = std.mem;
 
 const Allocator = mem.Allocator;
+const MappedFile = @import("MappedFile.zig");
 const Object = @import("Object.zig");
 
 file: fs.File,
@@ -213,16 +214,13 @@ pub fn parseObject(
         .Length => |len| len,
     };
     const object_size = (try object_header.size()) - object_name_len;
-    const contents = try allocator.allocWithOptions(u8, object_size, @alignOf(u64), null);
-    const amt = try reader.readAll(contents);
-    if (amt != object_size) {
-        return error.InputOutput;
-    }
+    const data = try MappedFile.mapWithOptions(allocator, self.file, object_size, try reader.context.getPos());
+    errdefer data.unmap(allocator);
 
     var object = Object{
         .name = name,
         .mtime = try self.header.date(),
-        .contents = contents,
+        .data = data,
     };
 
     try object.parse(allocator, cpu_arch);

@@ -10,6 +10,7 @@ const log = std.log.scoped(.link);
 const macho = std.macho;
 const math = std.math;
 const mem = std.mem;
+const os = std.os;
 const sort = std.sort;
 const trace = @import("../../tracy.zig").trace;
 
@@ -17,11 +18,12 @@ const Allocator = mem.Allocator;
 const Atom = @import("Atom.zig");
 const LoadCommandIterator = macho.LoadCommandIterator;
 const MachO = @import("../MachO.zig");
+const MappedFile = @import("MappedFile.zig");
 const SymbolWithLoc = MachO.SymbolWithLoc;
 
 name: []const u8,
 mtime: u64,
-contents: []align(@alignOf(u64)) const u8,
+data: MappedFile,
 
 header: macho.mach_header_64 = undefined,
 in_symtab: []const macho.nlist_64 = undefined,
@@ -51,11 +53,12 @@ pub fn deinit(self: *Object, gpa: Allocator) void {
     self.managed_atoms.deinit(gpa);
 
     gpa.free(self.name);
-    gpa.free(self.contents);
+    self.data.unmap(gpa);
 }
 
 pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch) !void {
-    var stream = std.io.fixedBufferStream(self.contents);
+    const data = self.data.slice();
+    var stream = std.io.fixedBufferStream(data);
     const reader = stream.reader();
 
     self.header = try reader.readStruct(macho.mach_header_64);
@@ -86,7 +89,7 @@ pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch)
 
     var it = LoadCommandIterator{
         .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
+        .buffer = data[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
     };
     while (it.next()) |cmd| {
         switch (cmd.cmd()) {
@@ -101,9 +104,9 @@ pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch)
                 const symtab = cmd.cast(macho.symtab_command).?;
                 self.in_symtab = @ptrCast(
                     [*]const macho.nlist_64,
-                    @alignCast(@alignOf(macho.nlist_64), &self.contents[symtab.symoff]),
+                    @alignCast(@alignOf(macho.nlist_64), &data[symtab.symoff]),
                 )[0..symtab.nsyms];
-                self.in_strtab = self.contents[symtab.stroff..][0..symtab.strsize];
+                self.in_strtab = data[symtab.stroff..][0..symtab.strsize];
                 try self.symtab.appendSlice(allocator, self.in_symtab);
             },
             else => {},
@@ -304,7 +307,7 @@ pub fn splitIntoAtomsOneShot(self: *Object, macho_file: *MachO, object_id: u32) 
         // Read section's list of relocations
         const relocs = @ptrCast(
             [*]const macho.relocation_info,
-            @alignCast(@alignOf(macho.relocation_info), &self.contents[sect.reloff]),
+            @alignCast(@alignOf(macho.relocation_info), &self.data.slice()[sect.reloff]),
         )[0..sect.nreloc];
 
         // Symbols within this section only.
@@ -539,9 +542,10 @@ pub fn getSourceSection(self: Object, index: u16) macho.section_64 {
 }
 
 pub fn parseDataInCode(self: Object) ?[]const macho.data_in_code_entry {
+    const data = self.data.slice();
     var it = LoadCommandIterator{
         .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
+        .buffer = data[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
     };
     while (it.next()) |cmd| {
         switch (cmd.cmd()) {
@@ -550,7 +554,7 @@ pub fn parseDataInCode(self: Object) ?[]const macho.data_in_code_entry {
                 const ndice = @divExact(dice.datasize, @sizeOf(macho.data_in_code_entry));
                 return @ptrCast(
                     [*]const macho.data_in_code_entry,
-                    @alignCast(@alignOf(macho.data_in_code_entry), &self.contents[dice.dataoff]),
+                    @alignCast(@alignOf(macho.data_in_code_entry), &data[dice.dataoff]),
                 )[0..ndice];
             },
             else => {},
@@ -561,7 +565,7 @@ pub fn parseDataInCode(self: Object) ?[]const macho.data_in_code_entry {
 fn parseDysymtab(self: Object) ?macho.dysymtab_command {
     var it = LoadCommandIterator{
         .ncmds = self.header.ncmds,
-        .buffer = self.contents[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
+        .buffer = self.data.slice()[@sizeOf(macho.mach_header_64)..][0..self.header.sizeofcmds],
     };
     while (it.next()) |cmd| {
         switch (cmd.cmd()) {
@@ -613,7 +617,7 @@ pub fn getSectionContents(self: Object, sect: macho.section_64) error{Overflow}!
         sect.offset,
         sect.offset + sect.size,
     });
-    return self.contents[sect.offset..][0..size];
+    return self.data.slice()[sect.offset..][0..size];
 }
 
 pub fn getString(self: Object, off: u32) []const u8 {
