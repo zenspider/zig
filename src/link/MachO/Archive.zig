@@ -8,7 +8,7 @@ const macho = std.macho;
 const mem = std.mem;
 
 const Allocator = mem.Allocator;
-const MappedFile = @import("MappedFile.zig");
+const MappedFile = @import("../MappedFile.zig");
 const Object = @import("Object.zig");
 
 file: fs.File,

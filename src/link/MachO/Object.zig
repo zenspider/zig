@@ -18,7 +18,7 @@ const Allocator = mem.Allocator;
 const Atom = @import("Atom.zig");
 const LoadCommandIterator = macho.LoadCommandIterator;
 const MachO = @import("../MachO.zig");
-const MappedFile = @import("MappedFile.zig");
+const MappedFile = @import("../MappedFile.zig");
 const SymbolWithLoc = MachO.SymbolWithLoc;
 
 name: []const u8,
