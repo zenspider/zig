@@ -1383,7 +1383,7 @@ fn parseObject(self: *MachO, path: []const u8) !bool {
         const stat = file.stat() catch break :mtime 0;
         break :mtime @intCast(u64, @divFloor(stat.mtime, 1_000_000_000));
     };
-    const data = try MappedFile.map(gpa, file);
+    const data = try MappedFile.map(gpa, file, .auto);
     errdefer data.unmap(gpa);
 
     var object = Object{
@@ -1485,7 +1485,7 @@ fn parseDylib(
         return error.Overflow;
     file_size -= fat_offset;
 
-    const data = try MappedFile.mapWithOptions(gpa, file, file_size, fat_offset);
+    const data = try MappedFile.mapWithOptions(gpa, file, file_size, fat_offset, .auto);
     defer data.unmap(gpa);
 
     const dylib_id = @intCast(u16, self.dylibs.items.len);

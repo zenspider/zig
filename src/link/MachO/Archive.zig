@@ -216,7 +216,7 @@ pub fn parseObject(
     };
     const object_off = math.cast(usize, try reader.context.getPos()) orelse return error.Overflow;
     const object_size = (try object_header.size()) - object_name_len;
-    const data = try MappedFile.mapWithOptions(allocator, self.file, object_size, object_off);
+    const data = try MappedFile.mapWithOptions(allocator, self.file, object_size, object_off, .malloc);
     errdefer data.unmap(allocator);
 
     var object = Object{

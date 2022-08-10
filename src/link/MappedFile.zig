@@ -29,9 +29,16 @@ raw: union {
 offset: usize = 0,
 
 const Tag = enum {
-    /// Uses `mmap`
     mmap,
-    /// Uses `malloc`
+    malloc,
+};
+
+const Strategy = enum {
+    /// Uses `mmap` on supported hosts, fallbacks to `malloc` if `mmap` fails or is unavailable
+    auto,
+    /// Uses `mmap` only
+    mmap,
+    /// Uses `malloc` only
     malloc,
 };
 
@@ -44,32 +51,41 @@ const Error = error{
 /// Maps the entire file using either `mmap` (preferred), or `malloc` (if the former
 /// fails and/or is unavailable).
 /// Needs to be free'd using `unmap`.
-pub fn map(gpa: Allocator, file: File) Error!MappedFile {
+pub fn map(gpa: Allocator, file: File, strategy: Strategy) Error!MappedFile {
     const file_len = math.cast(usize, try file.getEndPos()) orelse return error.Overflow;
-    return mapWithOptions(gpa, file, file_len, 0);
+    return mapWithOptions(gpa, file, file_len, 0, strategy);
 }
 
 /// Same as `map` however allows to specify the requested mapped length as well as start offset.
 /// Note that offset is will be backwards aligned to the first available page boundary.
-pub fn mapWithOptions(gpa: Allocator, file: File, length: usize, offset: usize) Error!MappedFile {
+pub fn mapWithOptions(
+    gpa: Allocator,
+    file: File,
+    length: usize,
+    offset: usize,
+    strategy: Strategy,
+) Error!MappedFile {
     if (length == 0) {
         return error.InputOutput;
     }
     if (builtin.os.tag == .windows) {
+        assert(strategy == .auto or strategy == .malloc);
         // TODO equivalent of mmap on Windows
         return malloc(gpa, file, length, offset);
     }
-    return mmap(file, length, offset) catch |err| {
-        log.debug("couldn't mmap file, failed with error: {s}", .{@errorName(err)});
-        return malloc(gpa, file, length, offset);
-    };
+    switch (strategy) {
+        .auto => return mmap(file, length, offset) catch |err| {
+            log.debug("couldn't mmap file, failed with error: {s}", .{@errorName(err)});
+            return malloc(gpa, file, length, offset);
+        },
+        .mmap => return mmap(file, length, offset),
+        .malloc => return malloc(gpa, file, length, offset),
+    }
 }
 
 fn malloc(gpa: Allocator, file: File, length: usize, offset: usize) Error!MappedFile {
     const reader = file.reader();
-    if (offset > 0) {
-        try file.seekTo(offset);
-    }
+    try file.seekTo(offset);
     const raw = try gpa.alloc(u8, length);
     errdefer gpa.free(raw);
     const amt = try reader.readAll(raw);
@@ -86,14 +102,11 @@ fn mmap(file: File, length: usize, offset: usize) Error!MappedFile {
     const aligned_offset = math.cast(usize, mem.alignBackwardGeneric(u64, offset, mem.page_size)) orelse
         return error.Overflow;
     const adjusted_length = length + (offset - aligned_offset);
-    // Mold is using os.PROT.READ | os.PROT.WRITE together with os.MAP.PRIVATE most likely
-    // because it is overwriting the mapped memory with some adjusted metadata when parsing
-    // object files and relocations. We might want to do the same in the future.
     const raw = try os.mmap(
         null,
         adjusted_length,
-        os.PROT.READ,
-        os.MAP.SHARED,
+        os.PROT.READ | os.PROT.WRITE,
+        os.MAP.PRIVATE,
         file.handle,
         aligned_offset,
     );
