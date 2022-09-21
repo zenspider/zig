@@ -364,7 +364,7 @@ pub fn categorizeOperand(
             return .none;
         },
 
-        .call, .call_always_tail, .call_never_tail, .call_never_inline, .call_async => {
+        .call, .call_always_tail, .call_never_tail, .call_never_inline => {
             const inst_data = air_datas[inst].pl_op;
             const callee = inst_data.operand;
             const extra = air.extraData(Air.Call, inst_data.payload);
@@ -377,6 +377,40 @@ pub fn categorizeOperand(
                 return .write;
             }
             var bt = l.iterateBigTomb(inst);
+            if (bt.feed()) {
+                if (callee == operand_ref) return .tomb;
+            } else {
+                if (callee == operand_ref) return .write;
+            }
+            for (args) |arg| {
+                if (bt.feed()) {
+                    if (arg == operand_ref) return .tomb;
+                } else {
+                    if (arg == operand_ref) return .write;
+                }
+            }
+            return .write;
+        },
+        .call_async => {
+            const inst_data = air_datas[inst].ty_pl;
+            const extra = air.extraData(Air.AsyncCall, inst_data.payload);
+            const callee = extra.data.callee;
+            const frame_ptr = extra.data.frame_ptr;
+            const args = @ptrCast([]const Air.Inst.Ref, air.extra[extra.end..][0..extra.data.args_len]);
+            if (args.len + 2 <= bpi - 1) {
+                if (frame_ptr == operand_ref) return matchOperandSmallIndex(l, inst, 0, .write);
+                if (callee == operand_ref) return matchOperandSmallIndex(l, inst, 1, .write);
+                for (args) |arg, i| {
+                    if (arg == operand_ref) return matchOperandSmallIndex(l, inst, @intCast(OperandInt, i + 2), .write);
+                }
+                return .write;
+            }
+            var bt = l.iterateBigTomb(inst);
+            if (bt.feed()) {
+                if (frame_ptr == operand_ref) return .tomb;
+            } else {
+                if (frame_ptr == operand_ref) return .write;
+            }
             if (bt.feed()) {
                 if (callee == operand_ref) return .tomb;
             } else {
@@ -923,14 +957,15 @@ fn analyzeInst(
             const callee = inst_data.operand;
             const extra = a.air.extraData(Air.Call, inst_data.payload);
             const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
-            return analyzeInstCall(a, new_set, inst, main_tomb, callee, args);
+            return analyzeInstCall(a, new_set, inst, main_tomb, .none, callee, args);
         },
         .call_async => {
             const ty_pl = inst_datas[inst].ty_pl;
             const extra = a.air.extraData(Air.AsyncCall, ty_pl.payload);
             const callee = extra.data.callee;
+            const frame_ptr = extra.data.frame_ptr;
             const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
-            return analyzeInstCall(a, new_set, inst, main_tomb, callee, args);
+            return analyzeInstCall(a, new_set, inst, main_tomb, frame_ptr, callee, args);
         },
         .select => {
             const pl_op = inst_datas[inst].pl_op;
@@ -1259,13 +1294,23 @@ fn analyzeInstCall(
     new_set: ?*std.AutoHashMapUnmanaged(Air.Inst.Index, void),
     inst: Air.Inst.Index,
     main_tomb: bool,
+    frame_ptr: Air.Inst.Ref,
     callee: Air.Inst.Ref,
     args: []const Air.Inst.Ref,
 ) Allocator.Error!void {
-    if (args.len + 1 <= bpi - 1) {
+    const total = args.len + 1 + @boolToInt(frame_ptr != .none);
+    if (total <= bpi - 1) {
         var buf = [1]Air.Inst.Ref{.none} ** (bpi - 1);
-        buf[0] = callee;
-        std.mem.copy(Air.Inst.Ref, buf[1..], args);
+        var op_index: usize = 0;
+        if (frame_ptr != .none) {
+            buf[op_index] = frame_ptr;
+            op_index += 1;
+        }
+
+        buf[op_index] = callee;
+        op_index += 1;
+
+        std.mem.copy(Air.Inst.Ref, buf[op_index..], args);
         return trackOperands(a, new_set, inst, main_tomb, buf);
     }
     var extra_tombs: ExtraTombs = .{
@@ -1275,6 +1320,9 @@ fn analyzeInstCall(
         .main_tomb = main_tomb,
     };
     defer extra_tombs.deinit();
+    if (frame_ptr != .none) {
+        try extra_tombs.feed(frame_ptr);
+    }
     try extra_tombs.feed(callee);
     for (args) |arg| {
         try extra_tombs.feed(arg);

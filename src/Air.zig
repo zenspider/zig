@@ -841,6 +841,7 @@ pub const Call = struct {
 
 /// Trailing is a list of `Inst.Ref` for every `args_len`.
 pub const AsyncCall = struct {
+    frame_ptr: Inst.Ref,
     callee: Inst.Ref,
     args_len: u32,
 };
