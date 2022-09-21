@@ -368,62 +368,25 @@ pub fn categorizeOperand(
             const inst_data = air_datas[inst].pl_op;
             const callee = inst_data.operand;
             const extra = air.extraData(Air.Call, inst_data.payload);
+            const frame_ptr: Air.Inst.Ref = .none;
             const args = @ptrCast([]const Air.Inst.Ref, air.extra[extra.end..][0..extra.data.args_len]);
-            if (args.len + 1 <= bpi - 1) {
-                if (callee == operand_ref) return matchOperandSmallIndex(l, inst, 0, .write);
-                for (args) |arg, i| {
-                    if (arg == operand_ref) return matchOperandSmallIndex(l, inst, @intCast(OperandInt, i + 1), .write);
-                }
-                return .write;
-            }
-            var bt = l.iterateBigTomb(inst);
-            if (bt.feed()) {
-                if (callee == operand_ref) return .tomb;
-            } else {
-                if (callee == operand_ref) return .write;
-            }
-            for (args) |arg| {
-                if (bt.feed()) {
-                    if (arg == operand_ref) return .tomb;
-                } else {
-                    if (arg == operand_ref) return .write;
-                }
-            }
-            return .write;
+            return categorizeOperandCall(l, inst, operand_ref, frame_ptr, callee, args);
         },
         .call_async => {
-            const inst_data = air_datas[inst].ty_pl;
+            const inst_data = air_datas[inst].pl_op;
             const extra = air.extraData(Air.AsyncCall, inst_data.payload);
-            const callee = extra.data.callee;
+            const callee = inst_data.operand;
             const frame_ptr = extra.data.frame_ptr;
             const args = @ptrCast([]const Air.Inst.Ref, air.extra[extra.end..][0..extra.data.args_len]);
-            if (args.len + 2 <= bpi - 1) {
-                if (frame_ptr == operand_ref) return matchOperandSmallIndex(l, inst, 0, .write);
-                if (callee == operand_ref) return matchOperandSmallIndex(l, inst, 1, .write);
-                for (args) |arg, i| {
-                    if (arg == operand_ref) return matchOperandSmallIndex(l, inst, @intCast(OperandInt, i + 2), .write);
-                }
-                return .write;
-            }
-            var bt = l.iterateBigTomb(inst);
-            if (bt.feed()) {
-                if (frame_ptr == operand_ref) return .tomb;
-            } else {
-                if (frame_ptr == operand_ref) return .write;
-            }
-            if (bt.feed()) {
-                if (callee == operand_ref) return .tomb;
-            } else {
-                if (callee == operand_ref) return .write;
-            }
-            for (args) |arg| {
-                if (bt.feed()) {
-                    if (arg == operand_ref) return .tomb;
-                } else {
-                    if (arg == operand_ref) return .write;
-                }
-            }
-            return .write;
+            return categorizeOperandCall(l, inst, operand_ref, frame_ptr, callee, args);
+        },
+        .call_async_alloc => {
+            const inst_data = air_datas[inst].ty_pl;
+            const extra = air.extraData(Air.AsyncCallAlloc, inst_data.payload);
+            const callee = extra.data.callee;
+            const frame_ptr: Air.Inst.Ref = .none;
+            const args = @ptrCast([]const Air.Inst.Ref, air.extra[extra.end..][0..extra.data.args_len]);
+            return categorizeOperandCall(l, inst, operand_ref, frame_ptr, callee, args);
         },
         .select => {
             const pl_op = air_datas[inst].pl_op;
@@ -558,6 +521,52 @@ pub fn categorizeOperand(
             return .none;
         },
     }
+}
+
+pub fn categorizeOperandCall(
+    l: Liveness,
+    inst: Air.Inst.Index,
+    operand_ref: Air.Inst.Ref,
+    frame_ptr: Air.Inst.Ref,
+    callee: Air.Inst.Ref,
+    args: []const Air.Inst.Ref,
+) OperandCategory {
+    const total = args.len + 1 + @boolToInt(frame_ptr != .none);
+    if (total <= bpi - 1) {
+        var op_index: OperandInt = 0;
+        if (frame_ptr != .none) {
+            if (frame_ptr == operand_ref) return matchOperandSmallIndex(l, inst, op_index, .write);
+            op_index += 1;
+        }
+        if (callee == operand_ref) return matchOperandSmallIndex(l, inst, op_index, .write);
+
+        for (args) |arg| {
+            op_index += 1;
+            if (arg == operand_ref) return matchOperandSmallIndex(l, inst, op_index, .write);
+        }
+        return .write;
+    }
+    var bt = l.iterateBigTomb(inst);
+    if (frame_ptr != .none) {
+        if (bt.feed()) {
+            if (frame_ptr == operand_ref) return .tomb;
+        } else {
+            if (frame_ptr == operand_ref) return .write;
+        }
+    }
+    if (bt.feed()) {
+        if (callee == operand_ref) return .tomb;
+    } else {
+        if (callee == operand_ref) return .write;
+    }
+    for (args) |arg| {
+        if (bt.feed()) {
+            if (arg == operand_ref) return .tomb;
+        } else {
+            if (arg == operand_ref) return .write;
+        }
+    }
+    return .write;
 }
 
 fn matchOperandSmallIndex(
@@ -953,17 +962,26 @@ fn analyzeInst(
         },
 
         .call, .call_always_tail, .call_never_tail, .call_never_inline => {
-            const inst_data = inst_datas[inst].pl_op;
-            const callee = inst_data.operand;
-            const extra = a.air.extraData(Air.Call, inst_data.payload);
+            const pl_op = inst_datas[inst].pl_op;
+            const callee = pl_op.operand;
+            const frame_ptr: Air.Inst.Ref = .none;
+            const extra = a.air.extraData(Air.Call, pl_op.payload);
             const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
-            return analyzeInstCall(a, new_set, inst, main_tomb, .none, callee, args);
+            return analyzeInstCall(a, new_set, inst, main_tomb, frame_ptr, callee, args);
         },
         .call_async => {
-            const ty_pl = inst_datas[inst].ty_pl;
-            const extra = a.air.extraData(Air.AsyncCall, ty_pl.payload);
-            const callee = extra.data.callee;
+            const pl_op = inst_datas[inst].pl_op;
+            const extra = a.air.extraData(Air.AsyncCall, pl_op.payload);
+            const callee = pl_op.operand;
             const frame_ptr = extra.data.frame_ptr;
+            const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
+            return analyzeInstCall(a, new_set, inst, main_tomb, frame_ptr, callee, args);
+        },
+        .call_async_alloc => {
+            const ty_pl = inst_datas[inst].ty_pl;
+            const extra = a.air.extraData(Air.AsyncCallAlloc, ty_pl.payload);
+            const callee = extra.data.callee;
+            const frame_ptr: Air.Inst.Ref = .none;
             const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
             return analyzeInstCall(a, new_set, inst, main_tomb, frame_ptr, callee, args);
         },
