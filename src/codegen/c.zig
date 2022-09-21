@@ -2515,6 +2515,7 @@ fn genBody(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail, OutO
             .call_always_tail  => try airCall(f, inst, .always_tail),
             .call_never_tail   => try airCall(f, inst, .never_tail),
             .call_never_inline => try airCall(f, inst, .never_inline),
+            .call_async        => try airCall(f, inst, .async_kw),
 
             .int_to_float,
             .float_to_int,
@@ -3418,6 +3419,7 @@ fn airCall(
         .always_tail => return f.fail("TODO: C backend: call with always_tail attribute", .{}),
         .never_tail => return f.fail("TODO: C backend: call with never_tail attribute", .{}),
         .never_inline => return f.fail("TODO: C backend: call with never_inline attribute", .{}),
+        .async_kw => return f.fail("TODO: C backend: call with async_kw attribute", .{}),
         else => unreachable,
     }
     const pl_op = f.air.instructions.items(.data)[inst].pl_op;

@@ -364,7 +364,7 @@ pub fn categorizeOperand(
             return .none;
         },
 
-        .call, .call_always_tail, .call_never_tail, .call_never_inline => {
+        .call, .call_always_tail, .call_never_tail, .call_never_inline, .call_async => {
             const inst_data = air_datas[inst].pl_op;
             const callee = inst_data.operand;
             const extra = air.extraData(Air.Call, inst_data.payload);
@@ -923,24 +923,14 @@ fn analyzeInst(
             const callee = inst_data.operand;
             const extra = a.air.extraData(Air.Call, inst_data.payload);
             const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
-            if (args.len + 1 <= bpi - 1) {
-                var buf = [1]Air.Inst.Ref{.none} ** (bpi - 1);
-                buf[0] = callee;
-                std.mem.copy(Air.Inst.Ref, buf[1..], args);
-                return trackOperands(a, new_set, inst, main_tomb, buf);
-            }
-            var extra_tombs: ExtraTombs = .{
-                .analysis = a,
-                .new_set = new_set,
-                .inst = inst,
-                .main_tomb = main_tomb,
-            };
-            defer extra_tombs.deinit();
-            try extra_tombs.feed(callee);
-            for (args) |arg| {
-                try extra_tombs.feed(arg);
-            }
-            return extra_tombs.finish();
+            return analyzeInstCall(a, new_set, inst, main_tomb, callee, args);
+        },
+        .call_async => {
+            const ty_pl = inst_datas[inst].ty_pl;
+            const extra = a.air.extraData(Air.AsyncCall, ty_pl.payload);
+            const callee = extra.data.callee;
+            const args = @ptrCast([]const Air.Inst.Ref, a.air.extra[extra.end..][0..extra.data.args_len]);
+            return analyzeInstCall(a, new_set, inst, main_tomb, callee, args);
         },
         .select => {
             const pl_op = inst_datas[inst].pl_op;
@@ -1262,6 +1252,34 @@ fn analyzeInst(
             return trackOperands(a, new_set, inst, main_tomb, .{ pl_op.operand, .none, .none });
         },
     }
+}
+
+fn analyzeInstCall(
+    a: *Analysis,
+    new_set: ?*std.AutoHashMapUnmanaged(Air.Inst.Index, void),
+    inst: Air.Inst.Index,
+    main_tomb: bool,
+    callee: Air.Inst.Ref,
+    args: []const Air.Inst.Ref,
+) Allocator.Error!void {
+    if (args.len + 1 <= bpi - 1) {
+        var buf = [1]Air.Inst.Ref{.none} ** (bpi - 1);
+        buf[0] = callee;
+        std.mem.copy(Air.Inst.Ref, buf[1..], args);
+        return trackOperands(a, new_set, inst, main_tomb, buf);
+    }
+    var extra_tombs: ExtraTombs = .{
+        .analysis = a,
+        .new_set = new_set,
+        .inst = inst,
+        .main_tomb = main_tomb,
+    };
+    defer extra_tombs.deinit();
+    try extra_tombs.feed(callee);
+    for (args) |arg| {
+        try extra_tombs.feed(arg);
+    }
+    return extra_tombs.finish();
 }
 
 fn trackOperands(
