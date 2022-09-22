@@ -231,7 +231,10 @@ pub fn categorizeOperand(
         .save_err_return_trace_index,
         => return .none,
 
-        .fence => return .write,
+        .suspend_begin,
+        .suspend_end,
+        .fence,
+        => return .write,
 
         .not,
         .bitcast,
@@ -850,6 +853,8 @@ fn analyzeInst(
         .wasm_memory_size,
         .err_return_trace,
         .save_err_return_trace_index,
+        .suspend_begin,
+        .suspend_end,
         => return trackOperands(a, new_set, inst, main_tomb, .{ .none, .none, .none }),
 
         .not,

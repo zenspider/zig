@@ -256,6 +256,9 @@ pub const Value = opaque {
 
     pub const addByValAttr = ZigLLVMAddByValAttr;
     extern fn ZigLLVMAddByValAttr(Fn: *Value, ArgNo: c_uint, type: *Type) void;
+
+    pub const functionSetPrefixData = ZigLLVMFunctionSetPrefixData;
+    extern fn ZigLLVMFunctionSetPrefixData(func: *Value, data: *Value) void;
 };
 
 pub const Type = opaque {
