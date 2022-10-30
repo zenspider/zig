@@ -2280,7 +2280,8 @@ pub fn lowerUnnamedConst(self: *MachO, typed_value: TypedValue, decl_index: Modu
         },
     };
 
-    const required_alignment = typed_value.ty.abiAlignment(self.base.options.target);
+    const mod = self.base.options.module.?;
+    const required_alignment = typed_value.ty.abiAlignment(mod);
     atom.size = code.len;
     atom.alignment = required_alignment;
     // TODO: work out logic for disambiguating functions from function pointers
@@ -2385,7 +2386,8 @@ pub fn updateDecl(self: *MachO, module: *Module, decl_index: Module.Decl.Index) 
 fn getDeclOutputSection(self: *MachO, decl: *Module.Decl) u8 {
     const ty = decl.ty;
     const val = decl.val;
-    const zig_ty = ty.zigTypeTag();
+    const mod = self.base.options.module.?;
+    const zig_ty = ty.zigTypeTag(mod);
     const mode = self.base.options.optimize_mode;
     const sect_id: u8 = blk: {
         // TODO finish and audit this function
@@ -2528,7 +2530,7 @@ fn updateDeclCode(self: *MachO, decl_index: Module.Decl.Index, code: []const u8)
     const mod = self.base.options.module.?;
     const decl = mod.declPtr(decl_index);
 
-    const required_alignment = decl.getAlignment(self.base.options.target);
+    const required_alignment = decl.getAlignment(mod);
     assert(decl.link.macho.sym_index != 0); // Caller forgot to call allocateDeclIndexes()
 
     const sym_name = try decl.getFullyQualifiedName(mod);

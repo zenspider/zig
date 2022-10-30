@@ -1057,7 +1057,7 @@ pub fn lowerUnnamedConst(self: *Coff, tv: TypedValue, decl_index: Module.Decl.In
         },
     };
 
-    const required_alignment = tv.ty.abiAlignment(self.base.options.target);
+    const required_alignment = tv.ty.abiAlignment(mod);
     atom.alignment = required_alignment;
     atom.size = @intCast(u32, code.len);
     sym.value = try self.allocateAtom(atom, atom.size, atom.alignment);
@@ -1126,7 +1126,8 @@ pub fn updateDecl(self: *Coff, module: *Module, decl_index: Module.Decl.Index) !
 
 fn getDeclOutputSection(self: *Coff, decl: *Module.Decl) u16 {
     const ty = decl.ty;
-    const zig_ty = ty.zigTypeTag();
+    const mod = self.base.options.module.?;
+    const zig_ty = ty.zigTypeTag(mod);
     const val = decl.val;
     const index: u16 = blk: {
         if (val.isUndefDeep()) {
@@ -1157,7 +1158,7 @@ fn updateDeclCode(self: *Coff, decl_index: Module.Decl.Index, code: []const u8, 
     defer gpa.free(decl_name);
 
     log.debug("updateDeclCode {s}{*}", .{ decl_name, decl });
-    const required_alignment = decl.getAlignment(self.base.options.target);
+    const required_alignment = decl.getAlignment(mod);
 
     const decl_ptr = self.decls.getPtr(decl_index).?;
     if (decl_ptr.* == null) {

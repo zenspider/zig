@@ -5,14 +5,16 @@
 //! Some instructions are special, such as:
 //! * Conditional Branches
 //! * Switch Branches
-const Liveness = @This();
 const std = @import("std");
-const trace = @import("tracy.zig").trace;
 const log = std.log.scoped(.liveness);
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
-const Air = @import("Air.zig");
 const Log2Int = std.math.Log2Int;
+
+const Liveness = @This();
+const trace = @import("tracy.zig").trace;
+const Air = @import("Air.zig");
+const InternPool = @import("InternPool.zig");
 
 /// This array is split into sets of 4 bits per AIR instruction.
 /// The MSB (0bX000) is whether the instruction is unreferenced.
@@ -1281,8 +1283,8 @@ fn trackOperands(
         i -= 1;
         tomb_bits <<= 1;
         const op_int = @enumToInt(operands[i]);
-        if (op_int < Air.Inst.Ref.typed_value_map.len) continue;
-        const operand: Air.Inst.Index = op_int - @intCast(u32, Air.Inst.Ref.typed_value_map.len);
+        if (op_int < InternPool.static_len) continue;
+        const operand: Air.Inst.Index = op_int - InternPool.static_len;
         const prev = try table.fetchPut(gpa, operand, {});
         if (prev == null) {
             // Death.

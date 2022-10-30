@@ -279,8 +279,9 @@ pub const DeclGen = struct {
     }
 
     fn arithmeticTypeInfo(self: *DeclGen, ty: Type) !ArithmeticTypeInfo {
+        const mod = self.module;
         const target = self.getTarget();
-        return switch (ty.zigTypeTag()) {
+        return switch (ty.zigTypeTag(mod)) {
             .Bool => ArithmeticTypeInfo{
                 .bits = 1, // Doesn't matter for this class.
                 .is_vector = false,
@@ -294,7 +295,7 @@ pub const DeclGen = struct {
                 .class = .float,
             },
             .Int => blk: {
-                const int_info = ty.intInfo(target);
+                const int_info = ty.intInfo(mod);
                 // TODO: Maybe it's useful to also return this value.
                 const maybe_backing_bits = self.backingIntBits(int_info.bits);
                 break :blk ArithmeticTypeInfo{
@@ -320,6 +321,7 @@ pub const DeclGen = struct {
     /// Generate a constant representing `val`.
     /// TODO: Deduplication?
     fn genConstant(self: *DeclGen, ty: Type, val: Value) Error!IdRef {
+        const mod = self.module;
         const target = self.getTarget();
         const section = &self.spv.sections.types_globals_constants;
         const result_id = self.spv.allocId();
@@ -330,9 +332,9 @@ pub const DeclGen = struct {
             return result_id.toRef();
         }
 
-        switch (ty.zigTypeTag()) {
+        switch (ty.zigTypeTag(mod)) {
             .Int => {
-                const int_info = ty.intInfo(target);
+                const int_info = ty.intInfo(mod);
                 const backing_bits = self.backingIntBits(int_info.bits) orelse {
                     // Integers too big for any native type are represented as "composite integers": An array of largestSupportedIntBits.
                     return self.todo("implement composite int constants for {}", .{ty.fmtDebug()});
@@ -345,7 +347,7 @@ pub const DeclGen = struct {
 
                 // Note, value is required to be sign-extended, so we don't need to mask off the upper bits.
                 // See https://www.khronos.org/registry/SPIR-V/specs/unified1/SPIRV.html#Literal
-                var int_bits = if (ty.isSignedInt()) @bitCast(u64, val.toSignedInt()) else val.toUnsignedInt(target);
+                var int_bits = if (ty.isSignedInt()) @bitCast(u64, val.toSignedInt()) else val.toUnsignedInt(mod);
 
                 const value: spec.LiteralContextDependentNumber = switch (backing_bits) {
                     1...32 => .{ .uint32 = @truncate(u32, int_bits) },
@@ -401,8 +403,9 @@ pub const DeclGen = struct {
 
     /// Turn a Zig type into a SPIR-V Type, and return a reference to it.
     fn resolveType(self: *DeclGen, ty: Type) Error!SpvType.Ref {
+        const mod = self.module;
         const target = self.getTarget();
-        return switch (ty.zigTypeTag()) {
+        return switch (ty.zigTypeTag(mod)) {
             .Void => try self.spv.resolveType(SpvType.initTag(.void)),
             .Bool => blk: {
                 // TODO: SPIR-V booleans are opaque. For local variables this is fine, but for structs
@@ -410,7 +413,7 @@ pub const DeclGen = struct {
                 break :blk try self.spv.resolveType(SpvType.initTag(.bool));
             },
             .Int => blk: {
-                const int_info = ty.intInfo(target);
+                const int_info = ty.intInfo(mod);
                 const backing_bits = self.backingIntBits(int_info.bits) orelse {
                     // TODO: Integers too big for any native type are represented as "composite integers":
                     // An array of largestSupportedIntBits.
@@ -497,7 +500,8 @@ pub const DeclGen = struct {
     /// SPIR-V requires pointers to have a storage class (address space), and so we have a special function for that.
     /// TODO: The result of this needs to be cached.
     fn genPointerType(self: *DeclGen, ty: Type, storage_class: spec.StorageClass) !IdResultType {
-        assert(ty.zigTypeTag() == .Pointer);
+        const mod = self.module;
+        assert(ty.zigTypeTag(mod) == .Pointer);
 
         const result_id = self.spv.allocId();
 
@@ -516,11 +520,12 @@ pub const DeclGen = struct {
     }
 
     fn genDecl(self: *DeclGen) !void {
+        const mod = self.module;
         const decl = self.decl;
         const result_id = decl.fn_link.spirv.id;
 
         if (decl.val.castTag(.function)) |_| {
-            assert(decl.ty.zigTypeTag() == .Fn);
+            assert(decl.ty.zigTypeTag(mod) == .Fn);
             const prototype_id = try self.resolveTypeId(decl.ty);
             try self.spv.sections.functions.emit(self.spv.gpa, .OpFunction, .{
                 .id_result_type = try self.resolveTypeId(decl.ty.fnReturnType()),
@@ -561,7 +566,7 @@ pub const DeclGen = struct {
             try self.spv.sections.functions.emit(self.spv.gpa, .OpFunctionEnd, {});
         } else {
             // TODO
-            // return self.todo("generate decl type {}", .{decl.ty.zigTypeTag()});
+            // return self.todo("generate decl type {}", .{decl.ty.zigTypeTag(mod)});
         }
     }
 
@@ -799,7 +804,8 @@ pub const DeclGen = struct {
         try self.beginSpvBlock(label_id);
 
         // If this block didn't produce a value, simply return here.
-        if (!ty.hasRuntimeBits())
+        const mod = self.module;
+        if (!ty.hasRuntimeBits(mod))
             return null;
 
         // Combine the result from the blocks using the Phi instruction.
@@ -826,7 +832,8 @@ pub const DeclGen = struct {
         const block = self.blocks.get(br.block_inst).?;
         const operand_ty = self.air.typeOf(br.operand);
 
-        if (operand_ty.hasRuntimeBits()) {
+        const mod = self.module;
+        if (operand_ty.hasRuntimeBits(mod)) {
             const operand_id = try self.resolve(br.operand);
             // current_block_label_id should not be undefined here, lest there is a br or br_void in the function's body.
             try block.incoming_blocks.append(self.spv.gpa, .{ .src_label_id = self.current_block_label_id, .break_value_id = operand_id });
@@ -912,7 +919,8 @@ pub const DeclGen = struct {
     fn airRet(self: *DeclGen, inst: Air.Inst.Index) !void {
         const operand = self.air.instructions.items(.data)[inst].un_op;
         const operand_ty = self.air.typeOf(operand);
-        if (operand_ty.hasRuntimeBits()) {
+        const mod = self.module;
+        if (operand_ty.hasRuntimeBits(mod)) {
             const operand_id = try self.resolve(operand);
             try self.code.emit(self.spv.gpa, .OpReturnValue, .{ .value = operand_id });
         } else {

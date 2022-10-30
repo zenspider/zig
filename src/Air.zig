@@ -5,10 +5,12 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const assert = std.debug.assert;
+
+const Air = @This();
 const Value = @import("value.zig").Value;
 const Type = @import("type.zig").Type;
-const assert = std.debug.assert;
-const Air = @This();
+const InternPool = @import("InternPool.zig");
 
 instructions: std.MultiArrayList(Inst).Slice,
 /// The meaning of this data is determined by `Inst.Tag` value.
@@ -764,7 +766,11 @@ pub const Inst = struct {
     /// The position of an AIR instruction within the `Air` instructions array.
     pub const Index = u32;
 
-    pub const Ref = @import("Zir.zig").Inst.Ref;
+    pub const Ref = enum(u32) {
+        zero_usize = @enumToInt(InternPool.Index.zero_usize),
+        none = std.math.maxInt(u32),
+        _,
+    };
 
     /// All instructions have an 8-byte payload, which is contained within
     /// this union. `Tag` determines which union field is active, as well as
@@ -984,10 +990,11 @@ pub fn getMainBody(air: Air) []const Air.Inst.Index {
 
 pub fn typeOf(air: Air, inst: Air.Inst.Ref) Type {
     const ref_int = @enumToInt(inst);
-    if (ref_int < Air.Inst.Ref.typed_value_map.len) {
-        return Air.Inst.Ref.typed_value_map[ref_int].ty;
+    if (ref_int < ref_start_index) {
+        const ip_index = @intToEnum(InternPool.Index, ref_int);
+        return ip_index.indexToKey().typeOf();
     }
-    return air.typeOfIndex(@intCast(Air.Inst.Index, ref_int - Air.Inst.Ref.typed_value_map.len));
+    return air.typeOfIndex(ref_int - ref_start_index);
 }
 
 pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
@@ -1195,11 +1202,7 @@ pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
 
         .call, .call_always_tail, .call_never_tail, .call_never_inline => {
             const callee_ty = air.typeOf(datas[inst].pl_op.operand);
-            switch (callee_ty.zigTypeTag()) {
-                .Fn => return callee_ty.fnReturnType(),
-                .Pointer => return callee_ty.childType().fnReturnType(),
-                else => unreachable,
-            }
+            return callee_ty.fnReturnType();
         },
 
         .slice_elem_val, .ptr_elem_val, .array_elem_val => {
@@ -1232,11 +1235,11 @@ pub fn typeOfIndex(air: Air, inst: Air.Inst.Index) Type {
 
 pub fn getRefType(air: Air, ref: Air.Inst.Ref) Type {
     const ref_int = @enumToInt(ref);
-    if (ref_int < Air.Inst.Ref.typed_value_map.len) {
-        var buffer: Value.ToTypeBuffer = undefined;
-        return Air.Inst.Ref.typed_value_map[ref_int].val.toType(&buffer);
+    if (ref_int < ref_start_index) {
+        const ip_index = @intToEnum(InternPool.Index, ref_int);
+        return ip_index.toType();
     }
-    const inst_index = ref_int - Air.Inst.Ref.typed_value_map.len;
+    const inst_index = ref_int - ref_start_index;
     const air_tags = air.instructions.items(.tag);
     const air_datas = air.instructions.items(.data);
     assert(air_tags[inst_index] == .const_ty);
@@ -1271,7 +1274,7 @@ pub fn deinit(air: *Air, gpa: std.mem.Allocator) void {
     air.* = undefined;
 }
 
-const ref_start_index: u32 = Air.Inst.Ref.typed_value_map.len;
+pub const ref_start_index: u32 = InternPool.static_len;
 
 pub fn indexToRef(inst: Air.Inst.Index) Air.Inst.Ref {
     return @intToEnum(Air.Inst.Ref, ref_start_index + inst);
@@ -1289,10 +1292,11 @@ pub fn refToIndex(inst: Air.Inst.Ref) ?Air.Inst.Index {
 /// Returns `null` if runtime-known.
 pub fn value(air: Air, inst: Air.Inst.Ref) ?Value {
     const ref_int = @enumToInt(inst);
-    if (ref_int < Air.Inst.Ref.typed_value_map.len) {
-        return Air.Inst.Ref.typed_value_map[ref_int].val;
+    if (ref_int < ref_start_index) {
+        const ip_index = @intToEnum(InternPool.Index, ref_int);
+        return ip_index.toValue();
     }
-    const inst_index = @intCast(Air.Inst.Index, ref_int - Air.Inst.Ref.typed_value_map.len);
+    const inst_index = @intCast(Air.Inst.Index, ref_int - ref_start_index);
     const air_datas = air.instructions.items(.data);
     switch (air.instructions.items(.tag)[inst_index]) {
         .constant => return air.values[air_datas[inst_index].ty_pl.payload],

@@ -83,8 +83,6 @@ pub fn generateZirData(self: *Autodoc) !void {
         }
     }
 
-    log.debug("Ref map size: {}", .{Ref.typed_value_map.len});
-
     const root_src_dir = self.module.main_pkg.root_src_directory;
     const root_src_path = self.module.main_pkg.root_src_path;
     const joined_src_path = try root_src_dir.join(self.arena, &.{root_src_path});
@@ -100,7 +98,7 @@ pub fn generateZirData(self: *Autodoc) !void {
             .ComptimeExpr = .{ .name = "ComptimeExpr" },
         });
 
-        // this skipts Ref.none but it's ok becuse we replaced it with ComptimeExpr
+        // this skips Ref.none but it's ok becuse we replaced it with ComptimeExpr
         var i: u32 = 1;
         while (i <= @enumToInt(Ref.anyerror_void_error_union_type)) : (i += 1) {
             var tmpbuf = std.ArrayList(u8).init(self.arena);

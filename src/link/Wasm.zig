@@ -1007,7 +1007,7 @@ fn finishUpdateDecl(wasm: *Wasm, decl: *Module.Decl, code: []const u8) !void {
 
     if (code.len == 0) return;
     atom.size = @intCast(u32, code.len);
-    atom.alignment = decl.ty.abiAlignment(wasm.base.options.target);
+    atom.alignment = decl.ty.abiAlignment(mod);
 }
 
 /// From a given symbol location, returns its `wasm.GlobalType`.
@@ -1057,9 +1057,8 @@ fn getFunctionSignature(wasm: *const Wasm, loc: SymbolLoc) std.wasm.Type {
 /// Returns the symbol index of the local
 /// The given `decl` is the parent decl whom owns the constant.
 pub fn lowerUnnamedConst(wasm: *Wasm, tv: TypedValue, decl_index: Module.Decl.Index) !u32 {
-    assert(tv.ty.zigTypeTag() != .Fn); // cannot create local symbols for functions
-
     const mod = wasm.base.options.module.?;
+    assert(tv.ty.zigTypeTag(mod) != .Fn); // cannot create local symbols for functions
     const decl = mod.declPtr(decl_index);
 
     // Create and initialize a new local symbol and atom
@@ -1078,7 +1077,7 @@ pub fn lowerUnnamedConst(wasm: *Wasm, tv: TypedValue, decl_index: Module.Decl.In
 
     const atom = try decl.link.wasm.locals.addOne(wasm.base.allocator);
     atom.* = Atom.empty;
-    atom.alignment = tv.ty.abiAlignment(wasm.base.options.target);
+    atom.alignment = tv.ty.abiAlignment(mod);
     try wasm.symbols.ensureUnusedCapacity(wasm.base.allocator, 1);
 
     if (wasm.symbols_free_list.popOrNull()) |index| {
@@ -1167,7 +1166,7 @@ pub fn getDeclVAddr(
     assert(reloc_info.parent_atom_index != 0);
     const atom = wasm.symbol_atom.get(.{ .file = null, .index = reloc_info.parent_atom_index }).?;
     const is_wasm32 = wasm.base.options.target.cpu.arch == .wasm32;
-    if (decl.ty.zigTypeTag() == .Fn) {
+    if (decl.ty.zigTypeTag(mod) == .Fn) {
         assert(reloc_info.addend == 0); // addend not allowed for function relocations
         // We found a function pointer, so add it to our table,
         // as function pointers are not allowed to be stored inside the data section.
@@ -2041,11 +2040,12 @@ pub fn getErrorTableSymbol(wasm: *Wasm) !u32 {
     symbol.setFlag(.WASM_SYM_VISIBILITY_HIDDEN);
 
     const slice_ty = Type.initTag(.const_slice_u8_sentinel_0);
+    const mod = wasm.base.options.module.?;
 
     const atom = try wasm.base.allocator.create(Atom);
     atom.* = Atom.empty;
     atom.sym_index = symbol_index;
-    atom.alignment = slice_ty.abiAlignment(wasm.base.options.target);
+    atom.alignment = slice_ty.abiAlignment(mod);
     try wasm.managed_atoms.append(wasm.base.allocator, atom);
     const loc = atom.symbolLoc();
     try wasm.resolved_symbols.put(wasm.base.allocator, loc, {});
@@ -2106,7 +2106,7 @@ fn populateErrorNameTable(wasm: *Wasm) !void {
             .offset = offset,
             .addend = @intCast(i32, addend),
         });
-        atom.size += @intCast(u32, slice_ty.abiSize(wasm.base.options.target));
+        atom.size += @intCast(u32, slice_ty.abiSize(mod));
         addend += len;
 
         // as we updated the error name table, we now store the actual name within the names atom
@@ -2278,7 +2278,7 @@ pub fn flushModule(wasm: *Wasm, comp: *Compilation, prog_node: *std.Progress.Nod
             const decl = mod.declPtr(decl_index_ptr.*);
             if (decl.isExtern()) continue;
             const atom = &decl.*.link.wasm;
-            if (decl.ty.zigTypeTag() == .Fn) {
+            if (decl.ty.zigTypeTag(mod) == .Fn) {
                 try wasm.parseAtom(atom, .{ .function = decl.fn_link.wasm });
             } else if (decl.getVariable()) |variable| {
                 if (!variable.is_mutable) {
@@ -3207,7 +3207,7 @@ fn linkWithLLD(wasm: *Wasm, comp: *Compilation, prog_node: *std.Progress.Node) !
                     for (mod.decl_exports.values()) |exports| {
                         for (exports) |exprt| {
                             const exported_decl = mod.declPtr(exprt.exported_decl);
-                            if (skip_export_non_fn and exported_decl.ty.zigTypeTag() != .Fn) {
+                            if (skip_export_non_fn and exported_decl.ty.zigTypeTag(mod) != .Fn) {
                                 // skip exporting symbols when we're building a WASI command
                                 // and the symbol is not a function
                                 continue;

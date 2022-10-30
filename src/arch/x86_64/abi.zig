@@ -1,13 +1,15 @@
 const std = @import("std");
-const Type = @import("../../type.zig").Type;
-const Target = std.Target;
 const assert = std.debug.assert;
+const Target = std.Target;
+
+const Type = @import("../../type.zig").Type;
 const Register = @import("bits.zig").Register;
 const RegisterManagerFn = @import("../../register_manager.zig").RegisterManager;
+const Module = @import("../../Module.zig");
 
 pub const Class = enum { integer, sse, sseup, x87, x87up, complex_x87, memory, none, win_i128 };
 
-pub fn classifyWindows(ty: Type, target: Target) Class {
+pub fn classifyWindows(ty: Type, mod: *const Module) Class {
     // https://docs.microsoft.com/en-gb/cpp/build/x64-calling-convention?view=vs-2017
     // "There's a strict one-to-one correspondence between a function call's arguments
     // and the registers used for those arguments. Any argument that doesn't fit in 8
@@ -16,7 +18,7 @@ pub fn classifyWindows(ty: Type, target: Target) Class {
     // "All floating point operations are done using the 16 XMM registers."
     // "Structs and unions of size 8, 16, 32, or 64 bits, and __m64 types, are passed
     // as if they were integers of the same size."
-    switch (ty.zigTypeTag()) {
+    switch (ty.zigTypeTag(mod)) {
         .Pointer,
         .Int,
         .Bool,
@@ -31,10 +33,10 @@ pub fn classifyWindows(ty: Type, target: Target) Class {
         .ErrorUnion,
         .AnyFrame,
         .Frame,
-        => switch (ty.abiSize(target)) {
+        => switch (ty.abiSize(mod)) {
             0 => unreachable,
             1, 2, 4, 8 => return .integer,
-            else => switch (ty.zigTypeTag()) {
+            else => switch (ty.zigTypeTag(mod)) {
                 .Int => return .win_i128,
                 .Struct, .Union => if (ty.containerLayout() == .Packed) {
                     return .win_i128;
@@ -64,13 +66,14 @@ pub const Context = enum { ret, arg };
 
 /// There are a maximum of 8 possible return slots. Returned values are in
 /// the beginning of the array; unused slots are filled with .none.
-pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
+pub fn classifySystemV(ty: Type, mod: *const Module, ctx: Context) [8]Class {
+    const target = mod.getTarget();
     const memory_class = [_]Class{
         .memory, .none, .none, .none,
         .none,   .none, .none, .none,
     };
     var result = [1]Class{.none} ** 8;
-    switch (ty.zigTypeTag()) {
+    switch (ty.zigTypeTag(mod)) {
         .Pointer => switch (ty.ptrSize()) {
             .Slice => {
                 result[0] = .integer;
@@ -83,7 +86,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             },
         },
         .Int, .Enum, .ErrorSet => {
-            const bits = ty.intInfo(target).bits;
+            const bits = ty.intInfo(mod).bits;
             if (bits <= 64) {
                 result[0] = .integer;
                 return result;
@@ -137,7 +140,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
         .Vector => {
             const elem_ty = ty.childType();
             if (ctx == .arg) {
-                const bit_size = ty.bitSize(target);
+                const bit_size = ty.bitSize(mod);
                 if (bit_size > 128) return memory_class;
                 if (bit_size > 80) return .{
                     .integer, .integer, .none, .none,
@@ -152,7 +155,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
                     .none,    .none, .none, .none,
                 };
             }
-            const bits = elem_ty.bitSize(target) * ty.arrayLen();
+            const bits = elem_ty.bitSize(mod) * ty.arrayLen();
             if (bits <= 64) return .{
                 .sse,  .none, .none, .none,
                 .none, .none, .none, .none,
@@ -188,7 +191,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             return memory_class;
         },
         .Optional => {
-            if (ty.isPtrLikeOptional()) {
+            if (ty.isPtrLikeOptional(mod)) {
                 result[0] = .integer;
                 return result;
             }
@@ -199,7 +202,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             // it contains unaligned fields, it has class MEMORY"
             // "If the size of the aggregate exceeds a single eightbyte, each is classified
             // separately.".
-            const ty_size = ty.abiSize(target);
+            const ty_size = ty.abiSize(mod);
             if (ty.containerLayout() == .Packed) {
                 assert(ty_size <= 128);
                 result[0] = .integer;
@@ -214,11 +217,11 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             const fields = ty.structFields();
             for (fields.values()) |field| {
                 if (field.abi_align != 0) {
-                    if (field.abi_align < field.ty.abiAlignment(target)) {
+                    if (field.abi_align < field.ty.abiAlignment(mod)) {
                         return memory_class;
                     }
                 }
-                const field_size = field.ty.abiSize(target);
+                const field_size = field.ty.abiSize(mod);
                 const field_class_array = classifySystemV(field.ty, target, .arg);
                 const field_class = std.mem.sliceTo(&field_class_array, .none);
                 if (byte_i + field_size <= 8) {
@@ -315,7 +318,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             // it contains unaligned fields, it has class MEMORY"
             // "If the size of the aggregate exceeds a single eightbyte, each is classified
             // separately.".
-            const ty_size = ty.abiSize(target);
+            const ty_size = ty.abiSize(mod);
             if (ty.containerLayout() == .Packed) {
                 assert(ty_size <= 128);
                 result[0] = .integer;
@@ -328,7 +331,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             const fields = ty.unionFields();
             for (fields.values()) |field| {
                 if (field.abi_align != 0) {
-                    if (field.abi_align < field.ty.abiAlignment(target)) {
+                    if (field.abi_align < field.ty.abiAlignment(mod)) {
                         return memory_class;
                     }
                 }
@@ -407,7 +410,7 @@ pub fn classifySystemV(ty: Type, target: Target, ctx: Context) [8]Class {
             return result;
         },
         .Array => {
-            const ty_size = ty.abiSize(target);
+            const ty_size = ty.abiSize(mod);
             if (ty_size <= 64) {
                 result[0] = .integer;
                 return result;

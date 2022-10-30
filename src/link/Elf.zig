@@ -2310,8 +2310,9 @@ pub fn freeDecl(self: *Elf, decl_index: Module.Decl.Index) void {
 }
 
 fn getDeclPhdrIndex(self: *Elf, decl: *Module.Decl) !u16 {
+    const mod = self.base.options.module.?;
     const ty = decl.ty;
-    const zig_ty = ty.zigTypeTag();
+    const zig_ty = ty.zigTypeTag(mod);
     const val = decl.val;
     const phdr_index: u16 = blk: {
         if (val.isUndefDeep()) {
@@ -2341,7 +2342,7 @@ fn updateDeclCode(self: *Elf, decl_index: Module.Decl.Index, code: []const u8, s
     defer self.base.allocator.free(decl_name);
 
     log.debug("updateDeclCode {s}{*}", .{ decl_name, decl });
-    const required_alignment = decl.getAlignment(self.base.options.target);
+    const required_alignment = decl.getAlignment(mod);
 
     const decl_ptr = self.decls.getPtr(decl_index).?;
     if (decl_ptr.* == null) {
@@ -2583,7 +2584,7 @@ pub fn lowerUnnamedConst(self: *Elf, typed_value: TypedValue, decl_index: Module
         },
     };
 
-    const required_alignment = typed_value.ty.abiAlignment(self.base.options.target);
+    const required_alignment = typed_value.ty.abiAlignment(mod);
     const phdr_index = self.phdr_load_ro_index.?;
     const shdr_index = self.phdr_shdr_table.get(phdr_index).?;
     const vaddr = try self.allocateTextBlock(atom, code.len, required_alignment, phdr_index);
