@@ -5905,7 +5905,7 @@ fn zirAsyncCall(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!A
     const call_src: LazySrcLoc = .{ .node_offset_var_decl_init = inst_data.src_node };
     const extra = sema.code.extraData(Zir.Inst.AsyncCall, inst_data.payload_index);
     const args_len = extra.data.args_len;
-    return callCommon(sema, block, inst, func_src, call_src, extra.data.callee, args_len, .async_kw, extra.end, false);
+    return callCommon(sema, block, inst, func_src, call_src, extra.data.callee, args_len, .async_kw, extra.end, false, false);
 }
 
 fn callCommon(
@@ -9475,7 +9475,7 @@ fn zirSwitchCapture(
     const operand_ty = if (operand_is_ref) operand_ptr_ty.childType() else operand_ptr_ty;
 
     if (block.inline_case_capture != .none) {
-        const item_val = sema.resolveConstValue(block, .unneeded, block.inline_case_capture, undefined) catch unreachable;
+        const item_val = sema.resolveConstValue(block, LazySrcLoc.un(), block.inline_case_capture, undefined) catch unreachable;
         if (operand_ty.zigTypeTag() == .Union) {
             const field_index = @intCast(u32, operand_ty.unionTagFieldIndex(item_val, sema.mod).?);
             const union_obj = operand_ty.cast(Type.Payload.Union).?.data;
@@ -10551,13 +10551,13 @@ fn zirSwitchBlock(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError
                 extra_index += 1;
 
                 const item_first_ref = try sema.resolveInst(first_ref);
-                var item = sema.resolveConstValue(block, .unneeded, item_first_ref, undefined) catch unreachable;
+                var item = sema.resolveConstValue(block, LazySrcLoc.un(), item_first_ref, undefined) catch unreachable;
                 const item_last_ref = try sema.resolveInst(last_ref);
-                const item_last = sema.resolveConstValue(block, .unneeded, item_last_ref, undefined) catch unreachable;
+                const item_last = sema.resolveConstValue(block, LazySrcLoc.un(), item_last_ref, undefined) catch unreachable;
 
                 while (item.compare(.lte, item_last, operand_ty, sema.mod)) : ({
                     // Previous validation has resolved any possible lazy values.
-                    item = try sema.intAddScalar(block, .unneeded, item, Value.one);
+                    item = try sema.intAddScalar(block, LazySrcLoc.un(), item, Value.one);
                 }) {
                     cases_len += 1;
 
@@ -10567,7 +10567,7 @@ fn zirSwitchBlock(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError
                     case_block.instructions.shrinkRetainingCapacity(0);
                     case_block.wip_capture_scope = child_block.wip_capture_scope;
 
-                    if (emit_bb) sema.emitBackwardBranch(block, .unneeded) catch |err| switch (err) {
+                    if (emit_bb) sema.emitBackwardBranch(block, LazySrcLoc.un()) catch |err| switch (err) {
                         error.NeededSourceLocation => {
                             const case_src = Module.SwitchProngSrc{ .range = .{ .prong = multi_i, .item = range_i } };
                             const decl = sema.mod.declPtr(case_block.src_decl);
@@ -10598,12 +10598,12 @@ fn zirSwitchBlock(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError
                 case_block.wip_capture_scope = child_block.wip_capture_scope;
 
                 const analyze_body = if (union_originally) blk: {
-                    const item_val = sema.resolveConstValue(block, .unneeded, item, undefined) catch unreachable;
+                    const item_val = sema.resolveConstValue(block, LazySrcLoc.un(), item, undefined) catch unreachable;
                     const field_ty = maybe_union_ty.unionFieldType(item_val, sema.mod);
                     break :blk field_ty.zigTypeTag() != .NoReturn;
                 } else true;
 
-                if (emit_bb) sema.emitBackwardBranch(block, .unneeded) catch |err| switch (err) {
+                if (emit_bb) sema.emitBackwardBranch(block, LazySrcLoc.un()) catch |err| switch (err) {
                     error.NeededSourceLocation => {
                         const case_src = Module.SwitchProngSrc{ .multi = .{ .prong = multi_i, .item = @intCast(u32, item_i) } };
                         const decl = sema.mod.declPtr(case_block.src_decl);

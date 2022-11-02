@@ -2194,8 +2194,8 @@ pub const SrcLoc = struct {
 
     pub fn span(src_loc: SrcLoc, gpa: Allocator) !Span {
         switch (src_loc.lazy) {
-            .unneeded => |trace| {
-                trace.dump();
+            .unneeded => |t| {
+                t.dump();
                 unreachable;
             },
             .entire_file => return Span{ .start = 0, .end = 1, .main = 0 },
