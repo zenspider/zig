@@ -35,6 +35,13 @@ steps:
   commands:
   - ./ci/zinc/build_aarch64_macos
 
+- name: build_aarch64_windows
+  depends_on:
+  - test_stage3_release
+  image: ci/debian-amd64:11.1-12
+  commands:
+  - ./ci/zinc/build_aarch64_windows
+
 - name: test_determinism
   depends_on:
   - test_stage3_release
@@ -78,6 +85,24 @@ steps:
       from_secret: AWS_SECRET_ACCESS_KEY
   commands:
   - ./ci/zinc/macos_package
+
+- name: windows_package
+  depends_on:
+  - test_stage3_debug
+  - build_aarch64_windows
+  when:
+    branch:
+      - master
+    event:
+      - push
+  image: ci/debian-amd64:11.1-12
+  environment:
+    AWS_ACCESS_KEY_ID:
+      from_secret: AWS_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY:
+      from_secret: AWS_SECRET_ACCESS_KEY
+  commands:
+  - ./ci/zinc/windows_package
 
 - name: notify_lavahut
   depends_on:
