@@ -150,11 +150,15 @@ const callee_preserved_regs_impl = if (builtin.os.tag.isDarwin()) struct {
     };
 };
 pub const callee_preserved_regs = callee_preserved_regs_impl.callee_preserved_regs;
+pub const caller_preserved_regs = [_]Register{
+    .x0, .x1, .x2,  .x3,  .x4,  .x5,  .x6,  .x7,
+    .x8, .x9, .x10, .x11, .x12, .x13, .x14, .x15,
+};
 
 pub const c_abi_int_param_regs = [_]Register{ .x0, .x1, .x2, .x3, .x4, .x5, .x6, .x7 };
 pub const c_abi_int_return_regs = [_]Register{ .x0, .x1, .x2, .x3, .x4, .x5, .x6, .x7 };
 
-const allocatable_registers = callee_preserved_regs;
+const allocatable_registers = callee_preserved_regs ++ caller_preserved_regs;
 pub const RegisterManager = RegisterManagerFn(@import("CodeGen.zig"), Register, &allocatable_registers);
 
 // Register classes
@@ -164,7 +168,7 @@ pub const RegisterClass = struct {
         var set = RegisterBitSet.initEmpty();
         set.setRangeValue(.{
             .start = 0,
-            .end = callee_preserved_regs.len,
+            .end = callee_preserved_regs.len + caller_preserved_regs.len,
         }, true);
         break :blk set;
     };
