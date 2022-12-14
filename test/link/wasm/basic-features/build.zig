@@ -13,11 +13,12 @@ pub fn build(b: *std.build.Builder) void {
     lib.use_lld = false;
 
     // Verify the result contains the features explicitly set on the target for the library.
-    const check = lib.checkObject(.wasm);
-    check.checkStart("name target_features");
-    check.checkNext("features 1");
-    check.checkNext("+ atomics");
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("name target_features");
+    check.match("features 1");
+    check.match("+ atomics");
 
     const test_step = b.step("test", "Run linker test");
-    test_step.dependOn(&check.step);
+    test_step.dependOn(&check_lib.step);
 }

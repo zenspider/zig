@@ -15,12 +15,15 @@ pub fn build(b: *Builder) void {
     dylib.linkLibC();
     dylib.install();
 
-    const check_dylib = dylib.checkObject(.macho);
-    check_dylib.checkStart("cmd ID_DYLIB");
-    check_dylib.checkNext("name @rpath/liba.dylib");
-    check_dylib.checkNext("timestamp 2");
-    check_dylib.checkNext("current version 10000");
-    check_dylib.checkNext("compatibility version 10000");
+    const check_dylib = dylib.checkObject(.macho, .{});
+    {
+        const check = check_dylib.root();
+        check.match("cmd ID_DYLIB");
+        check.match("name @rpath/liba.dylib");
+        check.match("timestamp 2");
+        check.match("current version 0x10000");
+        check.match("compatibility version 0x10000");
+    }
 
     test_step.dependOn(&check_dylib.step);
 
@@ -33,15 +36,20 @@ pub fn build(b: *Builder) void {
     exe.addLibraryPath(b.pathFromRoot("zig-out/lib/"));
     exe.addRPath(b.pathFromRoot("zig-out/lib"));
 
-    const check_exe = exe.checkObject(.macho);
-    check_exe.checkStart("cmd LOAD_DYLIB");
-    check_exe.checkNext("name @rpath/liba.dylib");
-    check_exe.checkNext("timestamp 2");
-    check_exe.checkNext("current version 10000");
-    check_exe.checkNext("compatibility version 10000");
-
-    check_exe.checkStart("cmd RPATH");
-    check_exe.checkNext(std.fmt.allocPrint(b.allocator, "path {s}", .{b.pathFromRoot("zig-out/lib")}) catch unreachable);
+    const check_exe = exe.checkObject(.macho, .{});
+    {
+        const check = check_exe.root();
+        check.match("cmd LOAD_DYLIB");
+        check.match("name @rpath/liba.dylib");
+        check.match("timestamp 2");
+        check.match("current version 0x10000");
+        check.match("compatibility version 0x10000");
+    }
+    {
+        const check = check_exe.root();
+        check.match("cmd RPATH");
+        check.match(std.fmt.allocPrint(b.allocator, "path {s}", .{b.pathFromRoot("zig-out/lib")}) catch unreachable);
+    }
 
     const run = check_exe.runAndCompare();
     run.cwd = b.pathFromRoot(".");

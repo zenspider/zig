@@ -21,17 +21,18 @@ pub fn build(b: *std.build.Builder) void {
     lib.addObject(c_obj);
 
     // Verify the result contains the features from the C Object file.
-    const check = lib.checkObject(.wasm);
-    check.checkStart("name target_features");
-    check.checkNext("features 7");
-    check.checkNext("+ atomics");
-    check.checkNext("+ bulk-memory");
-    check.checkNext("+ mutable-globals");
-    check.checkNext("+ nontrapping-fptoint");
-    check.checkNext("+ sign-ext");
-    check.checkNext("+ simd128");
-    check.checkNext("+ tail-call");
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("name target_features");
+    check.match("features 7");
+    check.match("+ atomics");
+    check.match("+ bulk-memory");
+    check.match("+ mutable-globals");
+    check.match("+ nontrapping-fptoint");
+    check.match("+ sign-ext");
+    check.match("+ simd128");
+    check.match("+ tail-call");
 
     const test_step = b.step("test", "Run linker test");
-    test_step.dependOn(&check.step);
+    test_step.dependOn(&check_lib.step);
 }

@@ -15,18 +15,19 @@ pub fn build(b: *Builder) void {
     lib.strip = false;
     lib.install();
 
-    const check_lib = lib.checkObject(.wasm);
-    check_lib.checkStart("Section type");
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("Section type");
     // only 2 entries, although we have 3 functions.
     // This is to test functions with the same function signature
     // have their types deduplicated.
-    check_lib.checkNext("entries 2");
-    check_lib.checkNext("params 1");
-    check_lib.checkNext("type i32");
-    check_lib.checkNext("returns 1");
-    check_lib.checkNext("type i64");
-    check_lib.checkNext("params 0");
-    check_lib.checkNext("returns 0");
+    check.match("entries 2");
+    check.match("params 1");
+    check.match("type i32");
+    check.match("returns 1");
+    check.match("type i64");
+    check.match("params 0");
+    check.match("returns 0");
 
     test_step.dependOn(&check_lib.step);
 }

@@ -497,8 +497,12 @@ pub fn runEmulatable(exe: *LibExeObjStep) *EmulatableRunStep {
     return run_step;
 }
 
-pub fn checkObject(self: *LibExeObjStep, obj_format: std.Target.ObjectFormat) *CheckObjectStep {
-    return CheckObjectStep.create(self.builder, self.getOutputSource(), obj_format);
+pub fn checkObject(
+    self: *LibExeObjStep,
+    obj_format: std.Target.ObjectFormat,
+    opts: CheckObjectStep.Options,
+) *CheckObjectStep {
+    return CheckObjectStep.create(self.builder, self.getOutputSource(), obj_format, opts);
 }
 
 pub fn setLinkerScriptPath(self: *LibExeObjStep, source: FileSource) void {

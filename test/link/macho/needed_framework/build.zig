@@ -17,10 +17,11 @@ pub fn build(b: *Builder) void {
     exe.linkFrameworkNeeded("Cocoa");
     exe.dead_strip_dylibs = true;
 
-    const check = exe.checkObject(.macho);
-    check.checkStart("cmd LOAD_DYLIB");
-    check.checkNext("name {*}Cocoa");
-    test_step.dependOn(&check.step);
+    const check_exe = exe.checkObject(.macho, .{});
+    const check = check_exe.root();
+    check.match("cmd LOAD_DYLIB");
+    check.match("name {*}Cocoa");
+    test_step.dependOn(&check_exe.step);
 
     const run_cmd = exe.run();
     test_step.dependOn(&run_cmd.step);

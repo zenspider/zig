@@ -25,15 +25,22 @@ pub fn build(b: *Builder) void {
     exe.addLibraryPath(b.pathFromRoot("zig-out/lib"));
     exe.addRPath(b.pathFromRoot("zig-out/lib"));
 
-    const check = exe.checkObject(.macho);
-    check.checkStart("cmd LOAD_WEAK_DYLIB");
-    check.checkNext("name @rpath/liba.dylib");
+    const check_exe = exe.checkObject(.macho, .{
+        .dump_symtab = true,
+    });
 
-    check.checkInSymtab();
-    check.checkNext("(undefined) weak external _a (from liba)");
-    check.checkNext("(undefined) weak external _asStr (from liba)");
+    {
+        const check = check_exe.root();
+        check.match("cmd LOAD_WEAK_DYLIB");
+        check.match("name @rpath/liba.dylib");
+    }
+    {
+        const check = check_exe.root();
+        check.match("(undefined) weak external _a (from liba)");
+        check.match("(undefined) weak external _asStr (from liba)");
+    }
 
-    const run_cmd = check.runAndCompare();
+    const run_cmd = check_exe.runAndCompare();
     run_cmd.expectStdOutEqual("42 42");
     test_step.dependOn(&run_cmd.step);
 }
