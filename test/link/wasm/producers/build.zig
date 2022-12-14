@@ -20,17 +20,18 @@ pub fn build(b: *Builder) void {
     var version_buf: [100]u8 = undefined;
     const version_fmt = std.fmt.bufPrint(&version_buf, "version {}", .{zig_version}) catch unreachable;
 
-    const check_lib = lib.checkObject(.wasm);
-    check_lib.checkStart("name producers");
-    check_lib.checkNext("fields 2");
-    check_lib.checkNext("field_name language");
-    check_lib.checkNext("values 1");
-    check_lib.checkNext("value_name Zig");
-    check_lib.checkNext(version_fmt);
-    check_lib.checkNext("field_name processed-by");
-    check_lib.checkNext("values 1");
-    check_lib.checkNext("value_name Zig");
-    check_lib.checkNext(version_fmt);
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("name producers");
+    check.match("fields 2");
+    check.match("field_name language");
+    check.match("values 1");
+    check.match("value_name Zig");
+    check.match(version_fmt);
+    check.match("field_name processed-by");
+    check.match("values 1");
+    check.match("value_name Zig");
+    check.match(version_fmt);
 
     test_step.dependOn(&check_lib.step);
 }

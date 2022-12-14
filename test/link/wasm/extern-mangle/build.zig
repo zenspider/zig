@@ -12,13 +12,14 @@ pub fn build(b: *Builder) void {
     lib.setTarget(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
     lib.install();
 
-    const check_lib = lib.checkObject(.wasm);
-    check_lib.checkStart("Section import");
-    check_lib.checkNext("entries 2"); // a.hello & b.hello
-    check_lib.checkNext("module a");
-    check_lib.checkNext("name hello");
-    check_lib.checkNext("module b");
-    check_lib.checkNext("name hello");
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("Section import");
+    check.match("entries 2"); // a.hello & b.hello
+    check.match("module a");
+    check.match("name hello");
+    check.match("module b");
+    check.match("name hello");
 
     test_step.dependOn(&check_lib.step);
 }

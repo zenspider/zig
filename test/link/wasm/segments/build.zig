@@ -15,17 +15,28 @@ pub fn build(b: *Builder) void {
     lib.strip = false;
     lib.install();
 
-    const check_lib = lib.checkObject(.wasm);
-    check_lib.checkStart("Section data");
-    check_lib.checkNext("entries 2"); // rodata & data, no bss because we're exporting memory
-
-    check_lib.checkStart("Section custom");
-    check_lib.checkStart("name name"); // names custom section
-    check_lib.checkStart("type data_segment");
-    check_lib.checkNext("names 2");
-    check_lib.checkNext("index 0");
-    check_lib.checkNext("name .rodata");
-    check_lib.checkNext("index 1");
-    check_lib.checkNext("name .data");
+    const check_lib = lib.checkObject(.wasm, .{});
+    {
+        const check = check_lib.root();
+        check.match("Section data");
+        check.match("entries 2"); // rodata & data, no bss because we're exporting memory
+    }
+    {
+        const check = check_lib.root();
+        check.match("Section custom");
+    }
+    {
+        const check = check_lib.root();
+        check.match("name name"); // names custom section
+    }
+    {
+        const check = check_lib.root();
+        check.match("type data_segment");
+        check.match("names 2");
+        check.match("index 0");
+        check.match("name .rodata");
+        check.match("index 1");
+        check.match("name .data");
+    }
     test_step.dependOn(&check_lib.step);
 }

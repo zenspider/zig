@@ -16,9 +16,10 @@ pub fn build(b: *Builder) void {
     lib.use_lld = false;
     lib.strip = false;
 
-    const check = lib.checkObject(.wasm);
-    check.checkStart("Section custom");
-    check.checkNext("name __truncsfhf2"); // Ensure it was imported and resolved
+    const check_lib = lib.checkObject(.wasm, .{});
+    const check = check_lib.root();
+    check.match("Section custom");
+    check.match("name __truncsfhf2"); // Ensure it was imported and resolved
 
-    test_step.dependOn(&check.step);
+    test_step.dependOn(&check_lib.step);
 }

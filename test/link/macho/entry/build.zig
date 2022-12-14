@@ -14,18 +14,23 @@ pub fn build(b: *Builder) void {
     exe.linkLibC();
     exe.entry_symbol_name = "_non_main";
 
-    const check_exe = exe.checkObject(.macho);
+    const check_exe = exe.checkObject(.macho, .{
+        .dump_symtab = true,
+    });
 
-    check_exe.checkStart("segname __TEXT");
-    check_exe.checkNext("vmaddr {vmaddr}");
-
-    check_exe.checkStart("cmd MAIN");
-    check_exe.checkNext("entryoff {entryoff}");
-
-    check_exe.checkInSymtab();
-    check_exe.checkNext("{n_value} (__TEXT,__text) external _non_main");
-
-    check_exe.checkComputeCompare("vmaddr entryoff +", .{ .op = .eq, .value = .{ .variable = "n_value" } });
+    {
+        const check = check_exe.root();
+        check.match("cmd MAIN");
+        check.match("entryoff {entryoff}");
+        const entryoff = check.get("entryoff");
+        entryoff.eq(0x538);
+    }
+    {
+        const check = check_exe.root();
+        check.match("{n_value} (__TEXT,__text) external _non_main");
+        const n_value = check.get("n_value");
+        n_value.eq(0x100000538);
+    }
 
     const run = check_exe.runAndCompare();
     run.expectStdOutEqual("42");

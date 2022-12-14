@@ -12,14 +12,19 @@ pub fn build(b: *Builder) void {
         // Without -dead_strip_dylibs we expect `-la` to include liba.dylib in the final executable
         const exe = createScenario(b, mode);
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("cmd LOAD_DYLIB");
-        check.checkNext("name {*}Cocoa");
+        const check_exe = exe.checkObject(.macho, .{});
+        {
+            const check = check_exe.root();
+            check.match("cmd LOAD_DYLIB");
+            check.match("name {*}Cocoa");
+        }
+        {
+            const check = check_exe.root();
+            check.match("cmd LOAD_DYLIB");
+            check.match("name {*}libobjc{*}.dylib");
+        }
 
-        check.checkStart("cmd LOAD_DYLIB");
-        check.checkNext("name {*}libobjc{*}.dylib");
-
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
 
         const run_cmd = exe.run();
         test_step.dependOn(&run_cmd.step);

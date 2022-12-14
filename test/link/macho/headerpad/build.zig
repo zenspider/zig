@@ -14,21 +14,23 @@ pub fn build(b: *Builder) void {
         const exe = simpleExe(b, mode);
         exe.headerpad_max_install_names = true;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("sectname __text");
-        check.checkNext("offset {offset}");
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("sectname __text");
+        check.match("offset {offset}");
+        const offset = check.get("offset");
 
         switch (builtin.cpu.arch) {
             .aarch64 => {
-                check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x4000 } });
+                offset.gte(0x4000);
             },
             .x86_64 => {
-                check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x1000 } });
+                offset.gte(0x1000);
             },
             else => unreachable,
         }
 
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
 
         const run = exe.run();
         test_step.dependOn(&run.step);
@@ -39,12 +41,14 @@ pub fn build(b: *Builder) void {
         const exe = simpleExe(b, mode);
         exe.headerpad_size = 0x10000;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("sectname __text");
-        check.checkNext("offset {offset}");
-        check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x10000 } });
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("sectname __text");
+        check.match("offset {offset}");
+        const offset = check.get("offset");
+        offset.gte(0x10000);
 
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
 
         const run = exe.run();
         test_step.dependOn(&run.step);
@@ -56,12 +60,14 @@ pub fn build(b: *Builder) void {
         exe.headerpad_max_install_names = true;
         exe.headerpad_size = 0x10000;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("sectname __text");
-        check.checkNext("offset {offset}");
-        check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x10000 } });
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("sectname __text");
+        check.match("offset {offset}");
+        const offset = check.get("offset");
+        offset.gte(0x10000);
 
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
 
         const run = exe.run();
         test_step.dependOn(&run.step);
@@ -73,21 +79,23 @@ pub fn build(b: *Builder) void {
         exe.headerpad_size = 0x1000;
         exe.headerpad_max_install_names = true;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("sectname __text");
-        check.checkNext("offset {offset}");
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("sectname __text");
+        check.match("offset {offset}");
+        const offset = check.get("offset");
 
         switch (builtin.cpu.arch) {
             .aarch64 => {
-                check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x4000 } });
+                offset.gte(0x4000);
             },
             .x86_64 => {
-                check.checkComputeCompare("offset", .{ .op = .gte, .value = .{ .literal = 0x1000 } });
+                offset.gte(0x1000);
             },
             else => unreachable,
         }
 
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
 
         const run = exe.run();
         test_step.dependOn(&run.step);

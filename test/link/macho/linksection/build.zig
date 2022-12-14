@@ -11,18 +11,23 @@ pub fn build(b: *std.build.Builder) void {
     obj.setBuildMode(mode);
     obj.setTarget(target);
 
-    const check = obj.checkObject(.macho);
+    const check_obj = obj.checkObject(.macho, .{
+        .dump_symtab = true,
+    });
 
-    check.checkInSymtab();
-    check.checkNext("{*} (__DATA,__TestGlobal) external _test_global");
-
-    check.checkInSymtab();
-    check.checkNext("{*} (__TEXT,__TestFn) external _testFn");
-
-    if (mode == .Debug) {
-        check.checkInSymtab();
-        check.checkNext("{*} (__TEXT,__TestGenFnA) _main.testGenericFn__anon_{*}");
+    {
+        const check = check_obj.root();
+        check.match("{*} (__DATA,__TestGlobal) external _test_global");
+    }
+    {
+        const check = check_obj.root();
+        check.match("{*} (__TEXT,__TestFn) external _testFn");
     }
 
-    test_step.dependOn(&check.step);
+    if (mode == .Debug) {
+        const check = check_obj.root();
+        check.match("{*} (__TEXT,__TestGenFnA) _main.testGenericFn__anon_{*}");
+    }
+
+    test_step.dependOn(&check_obj.step);
 }

@@ -20,19 +20,30 @@ step: Step,
 builder: *Builder,
 source: build.FileSource,
 max_bytes: usize = 20 * 1024 * 1024,
-checks: std.ArrayList(Check),
+nodes: std.ArrayList(*Node),
 dump_symtab: bool = false,
 obj_format: std.Target.ObjectFormat,
+opts: Options,
 
-pub fn create(builder: *Builder, source: build.FileSource, obj_format: std.Target.ObjectFormat) *CheckObjectStep {
+pub const Options = struct {
+    dump_symtab: bool = false,
+};
+
+pub fn create(
+    builder: *Builder,
+    source: build.FileSource,
+    obj_format: std.Target.ObjectFormat,
+    opts: Options,
+) *CheckObjectStep {
     const gpa = builder.allocator;
     const self = gpa.create(CheckObjectStep) catch unreachable;
     self.* = .{
         .builder = builder,
         .step = Step.init(.check_file, "CheckObject", gpa, make),
         .source = source.dupe(builder),
-        .checks = std.ArrayList(Check).init(gpa),
+        .nodes = std.ArrayList(*Node).init(gpa),
         .obj_format = obj_format,
+        .opts = opts,
     };
     self.source.addStepDependencies(&self.step);
     return self;
@@ -50,22 +61,64 @@ pub fn runAndCompare(self: *CheckObjectStep) *EmulatableRunStep {
     return emulatable_step;
 }
 
-/// There two types of actions currently suported:
-/// * `.match` - is the main building block of standard matchers with optional eat-all token `{*}`
-/// and extractors by name such as `{n_value}`. Please note this action is very simplistic in nature
-/// i.e., it won't really handle edge cases/nontrivial examples. But given that we do want to use
-/// it mainly to test the output of our object format parser-dumpers when testing the linkers, etc.
-/// it should be plenty useful in its current form.
-/// * `.compute_cmp` - can be used to perform an operation on the extracted global variables
-/// using the MatchAction. It currently only supports an addition. The operation is required
-/// to be specified in Reverse Polish Notation to ease in operator-precedence parsing (well,
-/// to avoid any parsing really).
-/// For example, if the two extracted values were saved as `vmaddr` and `entryoff` respectively
-/// they could then be added with this simple program `vmaddr entryoff +`.
-const Action = struct {
-    tag: enum { match, not_present, compute_cmp },
-    phrase: []const u8,
-    expected: ?ComputeCompareExpected = null,
+pub const Node = struct {
+    b: *Builder,
+    tag: Tag,
+    parent: ?*Node,
+    payload: Payload,
+    children: std.ArrayList(*Node),
+
+    const Tag = enum {
+        root,
+        match,
+        not_present,
+        get,
+        eql,
+        eq,
+        gte,
+    };
+
+    const Payload = union {
+        str: []const u8,
+        int: u64,
+    };
+
+    fn child(self: *Node, tag: Tag, payload: Payload) *Node {
+        const node = self.b.allocator.create(Node) catch unreachable;
+        node.* = .{
+            .b = self.b,
+            .tag = tag,
+            .payload = payload,
+            .parent = self,
+            .children = std.ArrayList(*Node).init(self.b.allocator),
+        };
+        self.children.append(node) catch unreachable;
+        return node;
+    }
+
+    pub fn match(self: *Node, payload: []const u8) void {
+        _ = self.child(.match, .{ .str = self.b.dupe(payload) });
+    }
+
+    pub fn notPresent(self: *Node, payload: []const u8) void {
+        _ = self.child(.not_present, .{ .str = self.b.dupe(payload) });
+    }
+
+    pub fn get(self: *Node, payload: []const u8) *Node {
+        return self.child(.get, .{ .str = self.b.dupe(payload) });
+    }
+
+    pub fn eql(self: *Node, payload: []const u8) void {
+        _ = self.child(.eql, .{ .str = self.b.dupe(payload) });
+    }
+
+    pub fn eq(self: *Node, payload: u64) void {
+        _ = self.child(.eq, .{ .int = payload });
+    }
+
+    pub fn gte(self: *Node, payload: u64) void {
+        _ = self.child(.gte, .{ .int = payload });
+    }
 
     /// Will return true if the `phrase` was found in the `haystack`.
     /// Some examples include:
@@ -75,12 +128,12 @@ const Action = struct {
     ///                             and save under `vmaddr` global name (see `global_vars` param)
     /// name {*}libobjc{*}.dylib => will match `name` followed by a token which contains `libobjc` and `.dylib`
     ///                             in that order with other letters in between
-    fn match(act: Action, haystack: []const u8, global_vars: anytype) !bool {
-        assert(act.tag == .match or act.tag == .not_present);
+    fn doMatch(self: *Node, haystack: []const u8, global_vars: anytype) !bool {
+        assert(self.tag == .match or self.tag == .not_present);
 
-        var candidate_var: ?struct { name: []const u8, value: u64 } = null;
+        var candidate_var: ?struct { name: []const u8, value: []const u8 } = null;
         var hay_it = mem.tokenize(u8, mem.trim(u8, haystack, " "), " ");
-        var needle_it = mem.tokenize(u8, mem.trim(u8, act.phrase, " "), " ");
+        var needle_it = mem.tokenize(u8, mem.trim(u8, self.payload.str, " "), " ");
 
         while (needle_it.next()) |needle_tok| {
             const hay_tok = hay_it.next() orelse return false;
@@ -105,7 +158,7 @@ const Action = struct {
 
                 const name = needle_tok[1..closing_brace];
                 if (name.len == 0) return error.MissingBraceValue;
-                const value = try std.fmt.parseInt(u64, hay_tok, 16);
+                const value = hay_tok;
                 candidate_var = .{
                     .name = name,
                     .value = value,
@@ -122,162 +175,105 @@ const Action = struct {
         return true;
     }
 
-    /// Will return true if the `phrase` is correctly parsed into an RPN program and
-    /// its reduced, computed value compares using `op` with the expected value, either
-    /// a literal or another extracted variable.
-    fn computeCmp(act: Action, gpa: Allocator, global_vars: anytype) !bool {
-        var op_stack = std.ArrayList(enum { add }).init(gpa);
-        var values = std.ArrayList(u64).init(gpa);
+    fn getVariable(self: *Node, global_vars: anytype) ![]const u8 {
+        const parent_node = self.parent orelse return error.IsRoot;
+        if (parent_node.tag != .get) return error.InvalidNode;
+        return global_vars.get(parent_node.payload.str).?; // We already verified it exists
+    }
 
-        var it = mem.tokenize(u8, act.phrase, " ");
-        while (it.next()) |next| {
-            if (mem.eql(u8, next, "+")) {
-                try op_stack.append(.add);
-            } else {
-                const val = global_vars.get(next) orelse {
+    fn doEql(self: *Node, global_vars: anytype) !bool {
+        assert(self.tag == .eql);
+        return mem.eql(u8, self.payload.str, try self.getVariable(global_vars));
+    }
+
+    fn doCmp(self: *Node, tag: Tag, global_vars: anytype) !bool {
+        const variable = try std.fmt.parseInt(u64, try self.getVariable(global_vars), 0);
+        return switch (tag) {
+            .eq => self.payload.int == variable,
+            .gte => self.payload.int <= variable,
+            else => unreachable,
+        };
+    }
+
+    fn next(self: *Node, lines: anytype, global_vars: anytype) anyerror!void {
+        switch (self.tag) {
+            .match => {
+                while (lines.next()) |line| {
+                    if (try self.doMatch(line, global_vars)) break;
+                } else {
+                    std.debug.print(
+                        \\
+                        \\========= Expected to find: ==========================
+                        \\{s}
+                        \\
+                    , .{self.payload.str});
+                    return error.TestFailed;
+                }
+            },
+            .not_present => {
+                while (lines.next()) |line| {
+                    if (try self.doMatch(line, global_vars)) {
+                        std.debug.print(
+                            \\
+                            \\========= Expected not to find: ===================
+                            \\{s}
+                            \\
+                        , .{self.payload.str});
+                        return error.TestFailed;
+                    }
+                }
+            },
+            .get => {
+                _ = global_vars.get(self.payload.str) orelse {
                     std.debug.print(
                         \\
                         \\========= Variable was not extracted: ===========
                         \\{s}
                         \\
-                    , .{next});
-                    return error.UnknownVariable;
+                    , .{self.payload.str});
+                    return error.TestFailed;
                 };
-                try values.append(val);
-            }
-        }
-
-        var op_i: usize = 1;
-        var reduced: u64 = values.items[0];
-        for (op_stack.items) |op| {
-            const other = values.items[op_i];
-            switch (op) {
-                .add => {
-                    reduced += other;
-                },
-            }
-        }
-
-        const exp_value = switch (act.expected.?.value) {
-            .variable => |name| global_vars.get(name) orelse {
+            },
+            .eql => if (!(try self.doEql(global_vars))) {
+                const given = self.getVariable(global_vars) catch unreachable;
                 std.debug.print(
                     \\
-                    \\========= Variable was not extracted: ===========
-                    \\{s}
+                    \\========= Variable does not match expected value: ===========
+                    \\{s} != {s}
                     \\
-                , .{name});
-                return error.UnknownVariable;
+                , .{ self.payload.str, given });
+                return error.TestFailed;
             },
-            .literal => |x| x,
-        };
-        return math.compare(reduced, act.expected.?.op, exp_value);
-    }
-};
+            .eq, .gte => if (!(try self.doCmp(self.tag, global_vars))) {
+                const given = self.getVariable(global_vars) catch unreachable;
+                std.debug.print(
+                    \\
+                    \\========= Variable does not match expected value: ===========
+                    \\0x{x} {s} 0x{x}
+                    \\
+                , .{ self.payload.int, @tagName(self.tag), std.fmt.parseInt(u64, given, 0) catch unreachable });
+                return error.TestFailed;
+            },
+            .root => {},
+        }
 
-const ComputeCompareExpected = struct {
-    op: math.CompareOperator,
-    value: union(enum) {
-        variable: []const u8,
-        literal: u64,
-    },
-
-    pub fn format(
-        value: @This(),
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, value);
-        _ = options;
-        try writer.print("{s} ", .{@tagName(value.op)});
-        switch (value.value) {
-            .variable => |name| try writer.writeAll(name),
-            .literal => |x| try writer.print("{x}", .{x}),
+        for (self.children.items) |child_node| {
+            try child_node.next(lines, global_vars);
         }
     }
 };
 
-const Check = struct {
-    builder: *Builder,
-    actions: std.ArrayList(Action),
-
-    fn create(b: *Builder) Check {
-        return .{
-            .builder = b,
-            .actions = std.ArrayList(Action).init(b.allocator),
-        };
-    }
-
-    fn match(self: *Check, phrase: []const u8) void {
-        self.actions.append(.{
-            .tag = .match,
-            .phrase = self.builder.dupe(phrase),
-        }) catch unreachable;
-    }
-
-    fn notPresent(self: *Check, phrase: []const u8) void {
-        self.actions.append(.{
-            .tag = .not_present,
-            .phrase = self.builder.dupe(phrase),
-        }) catch unreachable;
-    }
-
-    fn computeCmp(self: *Check, phrase: []const u8, expected: ComputeCompareExpected) void {
-        self.actions.append(.{
-            .tag = .compute_cmp,
-            .phrase = self.builder.dupe(phrase),
-            .expected = expected,
-        }) catch unreachable;
-    }
-};
-
-/// Creates a new sequence of actions with `phrase` as the first anchor searched phrase.
-pub fn checkStart(self: *CheckObjectStep, phrase: []const u8) void {
-    var new_check = Check.create(self.builder);
-    new_check.match(phrase);
-    self.checks.append(new_check) catch unreachable;
-}
-
-/// Adds another searched phrase to the latest created Check with `CheckObjectStep.checkStart(...)`.
-/// Asserts at least one check already exists.
-pub fn checkNext(self: *CheckObjectStep, phrase: []const u8) void {
-    assert(self.checks.items.len > 0);
-    const last = &self.checks.items[self.checks.items.len - 1];
-    last.match(phrase);
-}
-
-/// Adds another searched phrase to the latest created Check with `CheckObjectStep.checkStart(...)`
-/// however ensures there is no matching phrase in the output.
-/// Asserts at least one check already exists.
-pub fn checkNotPresent(self: *CheckObjectStep, phrase: []const u8) void {
-    assert(self.checks.items.len > 0);
-    const last = &self.checks.items[self.checks.items.len - 1];
-    last.notPresent(phrase);
-}
-
-/// Creates a new check checking specifically symbol table parsed and dumped from the object
-/// file.
-/// Issuing this check will force parsing and dumping of the symbol table.
-pub fn checkInSymtab(self: *CheckObjectStep) void {
-    self.dump_symtab = true;
-    const symtab_label = switch (self.obj_format) {
-        .macho => MachODumper.symtab_label,
-        else => @panic("TODO other parsers"),
+pub fn root(self: *CheckObjectStep) *Node {
+    const node = self.builder.allocator.create(Node) catch unreachable;
+    node.* = .{
+        .b = self.builder,
+        .tag = .root,
+        .payload = undefined,
+        .parent = null,
+        .children = std.ArrayList(*Node).init(self.builder.allocator),
     };
-    self.checkStart(symtab_label);
-}
-
-/// Creates a new standalone, singular check which allows running simple binary operations
-/// on the extracted variables. It will then compare the reduced program with the value of
-/// the expected variable.
-pub fn checkComputeCompare(
-    self: *CheckObjectStep,
-    program: []const u8,
-    expected: ComputeCompareExpected,
-) void {
-    var new_check = Check.create(self.builder);
-    new_check.computeCmp(program, expected);
-    self.checks.append(new_check) catch unreachable;
+    self.nodes.append(node) catch unreachable;
+    return node;
 }
 
 fn make(step: *Step) !void {
@@ -295,95 +291,39 @@ fn make(step: *Step) !void {
     );
 
     const output = switch (self.obj_format) {
-        .macho => try MachODumper.parseAndDump(contents, .{
-            .gpa = gpa,
-            .dump_symtab = self.dump_symtab,
-        }),
+        .macho => try MachODumper.parseAndDump(gpa, contents, self.opts),
         .elf => @panic("TODO elf parser"),
         .coff => @panic("TODO coff parser"),
-        .wasm => try WasmDumper.parseAndDump(contents, .{
-            .gpa = gpa,
-            .dump_symtab = self.dump_symtab,
-        }),
+        .wasm => try WasmDumper.parseAndDump(gpa, contents, self.opts),
         else => unreachable,
     };
 
-    var vars = std.StringHashMap(u64).init(gpa);
+    var vars = std.StringHashMap([]const u8).init(gpa);
 
-    for (self.checks.items) |chk| {
+    for (self.nodes.items) |root_node| {
         var it = mem.tokenize(u8, output, "\r\n");
-        for (chk.actions.items) |act| {
-            switch (act.tag) {
-                .match => {
-                    while (it.next()) |line| {
-                        if (try act.match(line, &vars)) break;
-                    } else {
-                        std.debug.print(
-                            \\
-                            \\========= Expected to find: ==========================
-                            \\{s}
-                            \\========= But parsed file does not contain it: =======
-                            \\{s}
-                            \\
-                        , .{ act.phrase, output });
-                        return error.TestFailed;
-                    }
-                },
-                .not_present => {
-                    while (it.next()) |line| {
-                        if (try act.match(line, &vars)) {
-                            std.debug.print(
-                                \\
-                                \\========= Expected not to find: ===================
-                                \\{s}
-                                \\========= But parsed file does contain it: ========
-                                \\{s}
-                                \\
-                            , .{ act.phrase, output });
-                            return error.TestFailed;
-                        }
-                    }
-                },
-                .compute_cmp => {
-                    const res = act.computeCmp(gpa, vars) catch |err| switch (err) {
-                        error.UnknownVariable => {
-                            std.debug.print(
-                                \\========= From parsed file: =====================
-                                \\{s}
-                                \\
-                            , .{output});
-                            return error.TestFailed;
-                        },
-                        else => |e| return e,
-                    };
-                    if (!res) {
-                        std.debug.print(
-                            \\
-                            \\========= Comparison failed for action: ===========
-                            \\{s} {}
-                            \\========= From parsed file: =======================
-                            \\{s}
-                            \\
-                        , .{ act.phrase, act.expected.?, output });
-                        return error.TestFailed;
-                    }
-                },
-            }
-        }
+        root_node.next(&it, &vars) catch |err| switch (err) {
+            error.TestFailed => {
+                std.debug.print(
+                    \\========= Parsed file: =======
+                    \\{s}
+                    \\
+                , .{output});
+                return err;
+            },
+            else => {
+                std.debug.print("Unexpected error occurred!\n", .{});
+                return err;
+            },
+        };
     }
 }
-
-const Opts = struct {
-    gpa: ?Allocator = null,
-    dump_symtab: bool = false,
-};
 
 const MachODumper = struct {
     const LoadCommandIterator = macho.LoadCommandIterator;
     const symtab_label = "symtab";
 
-    fn parseAndDump(bytes: []align(@alignOf(u64)) const u8, opts: Opts) ![]const u8 {
-        const gpa = opts.gpa orelse unreachable; // MachO dumper requires an allocator
+    fn parseAndDump(gpa: Allocator, bytes: []align(@alignOf(u64)) const u8, opts: Options) ![]const u8 {
         var stream = std.io.fixedBufferStream(bytes);
         const reader = stream.reader();
 
@@ -444,7 +384,7 @@ const MachODumper = struct {
                 const sym_name = mem.sliceTo(@ptrCast([*:0]const u8, strtab.ptr + sym.n_strx), 0);
                 if (sym.sect()) {
                     const sect = sections.items[sym.n_sect - 1];
-                    try writer.print("{x} ({s},{s})", .{
+                    try writer.print("0x{x} ({s},{s})", .{
                         sym.n_value,
                         sect.segName(),
                         sect.sectName(),
@@ -503,10 +443,10 @@ const MachODumper = struct {
                 try writer.writeByte('\n');
                 try writer.print(
                     \\segname {s}
-                    \\vmaddr {x}
-                    \\vmsize {x}
-                    \\fileoff {x}
-                    \\filesz {x}
+                    \\vmaddr 0x{x}
+                    \\vmsize 0x{x}
+                    \\fileoff 0x{x}
+                    \\filesz 0x{x}
                 , .{
                     seg.segName(),
                     seg.vmaddr,
@@ -519,10 +459,10 @@ const MachODumper = struct {
                     try writer.writeByte('\n');
                     try writer.print(
                         \\sectname {s}
-                        \\addr {x}
-                        \\size {x}
-                        \\offset {x}
-                        \\align {x}
+                        \\addr 0x{x}
+                        \\size 0x{x}
+                        \\offset 0x{x}
+                        \\align 0x{x}
                     , .{
                         sect.sectName(),
                         sect.addr,
@@ -543,8 +483,8 @@ const MachODumper = struct {
                 try writer.print(
                     \\name {s}
                     \\timestamp {d}
-                    \\current version {x}
-                    \\compatibility version {x}
+                    \\current version 0x{x}
+                    \\compatibility version 0x{x}
                 , .{
                     lc.getDylibPathName(),
                     dylib.dylib.timestamp,
@@ -557,8 +497,8 @@ const MachODumper = struct {
                 const main = lc.cast(macho.entry_point_command).?;
                 try writer.writeByte('\n');
                 try writer.print(
-                    \\entryoff {x}
-                    \\stacksize {x}
+                    \\entryoff 0x{x}
+                    \\stacksize 0x{x}
                 , .{ main.entryoff, main.stacksize });
             },
 
@@ -571,6 +511,12 @@ const MachODumper = struct {
                 });
             },
 
+            .UUID => {
+                const uuid = lc.cast(macho.uuid_command).?;
+                try writer.writeByte('\n');
+                try writer.print("uuid {x}", .{std.fmt.fmtSliceHexLower(&uuid.uuid)});
+            },
+
             else => {},
         }
     }
@@ -579,8 +525,7 @@ const MachODumper = struct {
 const WasmDumper = struct {
     const symtab_label = "symbols";
 
-    fn parseAndDump(bytes: []const u8, opts: Opts) ![]const u8 {
-        const gpa = opts.gpa orelse unreachable; // Wasm dumper requires an allocator
+    fn parseAndDump(gpa: Allocator, bytes: []const u8, opts: Options) ![]const u8 {
         if (opts.dump_symtab) {
             @panic("TODO: Implement symbol table parsing and dumping");
         }
@@ -817,9 +762,9 @@ const WasmDumper = struct {
         const flags = try std.leb.readULEB128(u8, reader);
         const min = try std.leb.readULEB128(u32, reader);
 
-        try writer.print("min {x}\n", .{min});
+        try writer.print("min 0x{x}\n", .{min});
         if (flags != 0) {
-            try writer.print("max {x}\n", .{try std.leb.readULEB128(u32, reader)});
+            try writer.print("max 0x{x}\n", .{try std.leb.readULEB128(u32, reader)});
         }
     }
 
@@ -830,11 +775,11 @@ const WasmDumper = struct {
             return err;
         };
         switch (opcode) {
-            .i32_const => try writer.print("i32.const {x}\n", .{try std.leb.readILEB128(i32, reader)}),
-            .i64_const => try writer.print("i64.const {x}\n", .{try std.leb.readILEB128(i64, reader)}),
-            .f32_const => try writer.print("f32.const {x}\n", .{@bitCast(f32, try reader.readIntLittle(u32))}),
-            .f64_const => try writer.print("f64.const {x}\n", .{@bitCast(f64, try reader.readIntLittle(u64))}),
-            .global_get => try writer.print("global.get {x}\n", .{try std.leb.readULEB128(u32, reader)}),
+            .i32_const => try writer.print("i32.const 0x{x}\n", .{try std.leb.readILEB128(i32, reader)}),
+            .i64_const => try writer.print("i64.const 0x{x}\n", .{try std.leb.readILEB128(i64, reader)}),
+            .f32_const => try writer.print("f32.const 0x{x}\n", .{@bitCast(f32, try reader.readIntLittle(u32))}),
+            .f64_const => try writer.print("f64.const 0x{x}\n", .{@bitCast(f64, try reader.readIntLittle(u64))}),
+            .global_get => try writer.print("global.get 0x{x}\n", .{try std.leb.readULEB128(u32, reader)}),
             else => unreachable,
         }
         const end_opcode = try std.leb.readULEB128(u8, reader);

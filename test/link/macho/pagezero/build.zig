@@ -16,16 +16,21 @@ pub fn build(b: *Builder) void {
         exe.linkLibC();
         exe.pagezero_size = 0x4000;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("LC 0");
-        check.checkNext("segname __PAGEZERO");
-        check.checkNext("vmaddr 0");
-        check.checkNext("vmsize 4000");
+        const check_exe = exe.checkObject(.macho, .{});
+        {
+            const check = check_exe.root();
+            check.match("LC 0");
+            check.match("segname __PAGEZERO");
+            check.match("vmaddr 0x0");
+            check.match("vmsize 0x4000");
+        }
+        {
+            const check = check_exe.root();
+            check.match("segname __TEXT");
+            check.match("vmaddr 0x4000");
+        }
 
-        check.checkStart("segname __TEXT");
-        check.checkNext("vmaddr 4000");
-
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
     }
 
     {
@@ -36,11 +41,12 @@ pub fn build(b: *Builder) void {
         exe.linkLibC();
         exe.pagezero_size = 0;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("LC 0");
-        check.checkNext("segname __TEXT");
-        check.checkNext("vmaddr 0");
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("LC 0");
+        check.match("segname __TEXT");
+        check.match("vmaddr 0x0");
 
-        test_step.dependOn(&check.step);
+        test_step.dependOn(&check_exe.step);
     }
 }

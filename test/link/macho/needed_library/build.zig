@@ -28,10 +28,11 @@ pub fn build(b: *Builder) void {
     exe.addRPath(b.pathFromRoot("zig-out/lib"));
     exe.dead_strip_dylibs = true;
 
-    const check = exe.checkObject(.macho);
-    check.checkStart("cmd LOAD_DYLIB");
-    check.checkNext("name @rpath/liba.dylib");
+    const check_exe = exe.checkObject(.macho, .{});
+    const check = check_exe.root();
+    check.match("cmd LOAD_DYLIB");
+    check.match("name @rpath/liba.dylib");
 
-    const run_cmd = check.runAndCompare();
+    const run_cmd = check_exe.runAndCompare();
     test_step.dependOn(&run_cmd.step);
 }

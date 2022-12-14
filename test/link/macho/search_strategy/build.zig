@@ -14,11 +14,12 @@ pub fn build(b: *Builder) void {
         const exe = createScenario(b, mode, target);
         exe.search_strategy = .dylibs_first;
 
-        const check = exe.checkObject(.macho);
-        check.checkStart("cmd LOAD_DYLIB");
-        check.checkNext("name @rpath/liba.dylib");
+        const check_exe = exe.checkObject(.macho, .{});
+        const check = check_exe.root();
+        check.match("cmd LOAD_DYLIB");
+        check.match("name @rpath/liba.dylib");
 
-        const run = check.runAndCompare();
+        const run = check_exe.runAndCompare();
         run.cwd = b.pathFromRoot(".");
         run.expectStdOutEqual("Hello world");
         test_step.dependOn(&run.step);

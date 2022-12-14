@@ -15,9 +15,10 @@ pub fn build(b: *Builder) void {
     exe.linkLibC();
     exe.stack_size = 0x100000000;
 
-    const check_exe = exe.checkObject(.macho);
-    check_exe.checkStart("cmd MAIN");
-    check_exe.checkNext("stacksize 100000000");
+    const check_exe = exe.checkObject(.macho, .{});
+    const check = check_exe.root();
+    check.match("cmd MAIN");
+    check.match("stacksize 0x100000000");
 
     const run = check_exe.runAndCompare();
     test_step.dependOn(&run.step);
