@@ -1757,16 +1757,6 @@ pub const Zld = struct {
         }
     }
 
-    fn writeLinkeditSegmentData(self: *Zld, ncmds: *u32, lc_writer: anytype, reverse_lookups: [][]u32) !void {
-        try self.writeDyldInfoData(ncmds, lc_writer, reverse_lookups);
-        try self.writeFunctionStarts(ncmds, lc_writer);
-        try self.writeDataInCode(ncmds, lc_writer);
-        try self.writeSymtabs(ncmds, lc_writer);
-
-        const seg = self.getLinkeditSegmentPtr();
-        seg.vmsize = mem.alignForwardGeneric(u64, seg.filesize, self.page_size);
-    }
-
     fn collectRebaseDataFromContainer(
         self: *Zld,
         sect_id: u8,
@@ -2497,47 +2487,17 @@ pub const Zld = struct {
         ncmds.* += 1;
     }
 
-    fn writeSymtabs(self: *Zld, ncmds: *u32, lc_writer: anytype) !void {
-        var symtab_cmd = macho.symtab_command{
-            .cmdsize = @sizeOf(macho.symtab_command),
-            .symoff = 0,
-            .nsyms = 0,
-            .stroff = 0,
-            .strsize = 0,
-        };
-        var dysymtab_cmd = macho.dysymtab_command{
-            .cmdsize = @sizeOf(macho.dysymtab_command),
-            .ilocalsym = 0,
-            .nlocalsym = 0,
-            .iextdefsym = 0,
-            .nextdefsym = 0,
-            .iundefsym = 0,
-            .nundefsym = 0,
-            .tocoff = 0,
-            .ntoc = 0,
-            .modtaboff = 0,
-            .nmodtab = 0,
-            .extrefsymoff = 0,
-            .nextrefsyms = 0,
-            .indirectsymoff = 0,
-            .nindirectsyms = 0,
-            .extreloff = 0,
-            .nextrel = 0,
-            .locreloff = 0,
-            .nlocrel = 0,
-        };
-        var ctx = try self.writeSymtab(&symtab_cmd);
-        defer ctx.imports_table.deinit();
-        try self.writeDysymtab(ctx, &dysymtab_cmd);
-        try self.writeStrtab(&symtab_cmd);
-        try lc_writer.writeStruct(symtab_cmd);
-        try lc_writer.writeStruct(dysymtab_cmd);
-        ncmds.* += 2;
-    }
-
-    fn writeSymtab(self: *Zld, lc: *macho.symtab_command) !SymtabCtx {
+    fn writeSymtabs(self: *Zld, ncmds: *u32, lc_writer: anytype, wants_deterministic_uuid: bool) !?uuid.StabsPos {
         const gpa = self.gpa;
 
+        const seg = self.getLinkeditSegmentPtr();
+        const symtab_offset = mem.alignForwardGeneric(
+            u64,
+            seg.fileoff + seg.filesize,
+            @alignOf(macho.nlist_64),
+        );
+
+        // symtab part of LC_SYMTAB
         var locals = std.ArrayList(macho.nlist_64).init(gpa);
         defer locals.deinit();
 
@@ -2556,11 +2516,17 @@ pub const Zld = struct {
             }
         }
 
-        if (!self.options.strip) {
+        // Work out where in the symtab data stabs are positioned if we want deterministic UUID.
+        const stabs_pos: ?uuid.StabsPos = if (!self.options.strip) blk: {
+            const nlocals = @intCast(u32, locals.items.len);
             for (self.objects.items) |object| {
                 try self.generateSymbolStabs(object, &locals);
             }
-        }
+            break :blk if (wants_deterministic_uuid) .{
+                .off = @intCast(u32, symtab_offset) + nlocals * @sizeOf(macho.nlist_64),
+                .len = (@intCast(u32, locals.items.len) - nlocals) * @sizeOf(macho.nlist_64),
+            } else null;
+        } else null;
 
         var exports = std.ArrayList(macho.nlist_64).init(gpa);
         defer exports.deinit();
@@ -2597,76 +2563,55 @@ pub const Zld = struct {
         const nimports = @intCast(u32, imports.items.len);
         const nsyms = nlocals + nexports + nimports;
 
-        const seg = self.getLinkeditSegmentPtr();
-        const offset = mem.alignForwardGeneric(
-            u64,
-            seg.fileoff + seg.filesize,
-            @alignOf(macho.nlist_64),
-        );
-        const needed_size = nsyms * @sizeOf(macho.nlist_64);
-        seg.filesize = offset + needed_size - seg.fileoff;
+        const symtab_needed_size = nsyms * @sizeOf(macho.nlist_64);
+        seg.filesize = symtab_offset + symtab_needed_size - seg.fileoff;
 
         var buffer = std.ArrayList(u8).init(gpa);
         defer buffer.deinit();
-        try buffer.ensureTotalCapacityPrecise(needed_size);
+        try buffer.ensureTotalCapacityPrecise(symtab_needed_size);
         buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(locals.items));
         buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(exports.items));
         buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(imports.items));
 
-        log.debug("writing symtab from 0x{x} to 0x{x}", .{ offset, offset + needed_size });
-        try self.file.pwriteAll(buffer.items, offset);
+        log.debug("writing symtab from 0x{x} to 0x{x}", .{ symtab_offset, symtab_offset + symtab_needed_size });
+        try self.file.pwriteAll(buffer.items, symtab_offset);
 
-        lc.symoff = @intCast(u32, offset);
-        lc.nsyms = nsyms;
+        // strtab part of LC_SYMTAB
+        const strtab_offset = mem.alignForwardGeneric(u64, seg.fileoff + seg.filesize, @alignOf(u64));
+        const strtab_needed_size = self.strtab.buffer.items.len;
+        seg.filesize = strtab_offset + strtab_needed_size - seg.fileoff;
 
-        return SymtabCtx{
-            .nlocalsym = nlocals,
-            .nextdefsym = nexports,
-            .nundefsym = nimports,
-            .imports_table = imports_table,
+        log.debug("writing string table from 0x{x} to 0x{x}", .{ strtab_offset, strtab_offset + strtab_needed_size });
+
+        try self.file.pwriteAll(self.strtab.buffer.items, strtab_offset);
+
+        var symtab_cmd = macho.symtab_command{
+            .cmdsize = @sizeOf(macho.symtab_command),
+            .symoff = @intCast(u32, symtab_offset),
+            .nsyms = nsyms,
+            .stroff = @intCast(u32, strtab_offset),
+            .strsize = @intCast(u32, strtab_needed_size),
         };
-    }
 
-    fn writeStrtab(self: *Zld, lc: *macho.symtab_command) !void {
-        const seg = self.getLinkeditSegmentPtr();
-        const offset = mem.alignForwardGeneric(u64, seg.fileoff + seg.filesize, @alignOf(u64));
-        const needed_size = self.strtab.buffer.items.len;
-        seg.filesize = offset + needed_size - seg.fileoff;
-
-        log.debug("writing string table from 0x{x} to 0x{x}", .{ offset, offset + needed_size });
-
-        try self.file.pwriteAll(self.strtab.buffer.items, offset);
-
-        lc.stroff = @intCast(u32, offset);
-        lc.strsize = @intCast(u32, needed_size);
-    }
-
-    const SymtabCtx = struct {
-        nlocalsym: u32,
-        nextdefsym: u32,
-        nundefsym: u32,
-        imports_table: std.AutoHashMap(SymbolWithLoc, u32),
-    };
-
-    fn writeDysymtab(self: *Zld, ctx: SymtabCtx, lc: *macho.dysymtab_command) !void {
-        const gpa = self.gpa;
+        // LC_DYSYMTAB
         const nstubs = @intCast(u32, self.stubs.items.len);
         const ngot_entries = @intCast(u32, self.got_entries.items.len);
         const nindirectsyms = nstubs * 2 + ngot_entries;
-        const iextdefsym = ctx.nlocalsym;
-        const iundefsym = iextdefsym + ctx.nextdefsym;
+        const iextdefsym = nlocals;
+        const iundefsym = iextdefsym + nexports;
 
-        const seg = self.getLinkeditSegmentPtr();
-        const offset = mem.alignForwardGeneric(u64, seg.fileoff + seg.filesize, @alignOf(u64));
-        const needed_size = nindirectsyms * @sizeOf(u32);
-        seg.filesize = offset + needed_size - seg.fileoff;
+        const dysymtab_offset = mem.alignForwardGeneric(u64, seg.fileoff + seg.filesize, @alignOf(u64));
+        const dysymtab_needed_size = nindirectsyms * @sizeOf(u32);
+        seg.filesize = dysymtab_offset + dysymtab_needed_size - seg.fileoff;
 
-        log.debug("writing indirect symbol table from 0x{x} to 0x{x}", .{ offset, offset + needed_size });
+        log.debug("writing indirect symbol table from 0x{x} to 0x{x}", .{
+            dysymtab_offset,
+            dysymtab_offset + dysymtab_needed_size,
+        });
 
-        var buf = std.ArrayList(u8).init(gpa);
-        defer buf.deinit();
-        try buf.ensureTotalCapacity(needed_size);
-        const writer = buf.writer();
+        var dysymtab_buf = std.ArrayList(u8).init(gpa);
+        defer dysymtab_buf.deinit();
+        try dysymtab_buf.ensureTotalCapacity(dysymtab_needed_size);
 
         if (self.getSectionByName("__TEXT", "__stubs")) |sect_id| {
             const stubs = &self.sections.items(.header)[sect_id];
@@ -2674,7 +2619,7 @@ pub const Zld = struct {
             for (self.stubs.items) |entry| {
                 const target_sym = entry.getTargetSymbol(self);
                 assert(target_sym.undf());
-                try writer.writeIntLittle(u32, iundefsym + ctx.imports_table.get(entry.target).?);
+                try dysymtab_buf.writer().writeIntLittle(u32, iundefsym + imports_table.get(entry.target).?);
             }
         }
 
@@ -2684,9 +2629,9 @@ pub const Zld = struct {
             for (self.got_entries.items) |entry| {
                 const target_sym = entry.getTargetSymbol(self);
                 if (target_sym.undf()) {
-                    try writer.writeIntLittle(u32, iundefsym + ctx.imports_table.get(entry.target).?);
+                    try dysymtab_buf.writer().writeIntLittle(u32, iundefsym + imports_table.get(entry.target).?);
                 } else {
-                    try writer.writeIntLittle(u32, macho.INDIRECT_SYMBOL_LOCAL);
+                    try dysymtab_buf.writer().writeIntLittle(u32, macho.INDIRECT_SYMBOL_LOCAL);
                 }
             }
         }
@@ -2697,20 +2642,40 @@ pub const Zld = struct {
             for (self.stubs.items) |entry| {
                 const target_sym = entry.getTargetSymbol(self);
                 assert(target_sym.undf());
-                try writer.writeIntLittle(u32, iundefsym + ctx.imports_table.get(entry.target).?);
+                try dysymtab_buf.writer().writeIntLittle(u32, iundefsym + imports_table.get(entry.target).?);
             }
         }
 
-        assert(buf.items.len == needed_size);
-        try self.file.pwriteAll(buf.items, offset);
+        assert(dysymtab_buf.items.len == dysymtab_needed_size);
+        try self.file.pwriteAll(dysymtab_buf.items, dysymtab_offset);
 
-        lc.nlocalsym = ctx.nlocalsym;
-        lc.iextdefsym = iextdefsym;
-        lc.nextdefsym = ctx.nextdefsym;
-        lc.iundefsym = iundefsym;
-        lc.nundefsym = ctx.nundefsym;
-        lc.indirectsymoff = @intCast(u32, offset);
-        lc.nindirectsyms = nindirectsyms;
+        var dysymtab_cmd = macho.dysymtab_command{
+            .cmdsize = @sizeOf(macho.dysymtab_command),
+            .ilocalsym = 0,
+            .nlocalsym = nlocals,
+            .iextdefsym = iextdefsym,
+            .nextdefsym = nexports,
+            .iundefsym = iundefsym,
+            .nundefsym = nimports,
+            .tocoff = 0,
+            .ntoc = 0,
+            .modtaboff = 0,
+            .nmodtab = 0,
+            .extrefsymoff = 0,
+            .nextrefsyms = 0,
+            .indirectsymoff = @intCast(u32, dysymtab_offset),
+            .nindirectsyms = nindirectsyms,
+            .extreloff = 0,
+            .nextrel = 0,
+            .locreloff = 0,
+            .nlocrel = 0,
+        };
+
+        try lc_writer.writeStruct(symtab_cmd);
+        try lc_writer.writeStruct(dysymtab_cmd);
+        ncmds.* += 2;
+
+        return stabs_pos;
     }
 
     fn writeCodeSignaturePadding(
@@ -3483,6 +3448,7 @@ pub fn linkWithZld(macho_file: *MachO, comp: *Compilation, prog_node: *std.Progr
     const stack_size = options.stack_size_override orelse 0;
     const is_debug_build = options.optimize_mode == .Debug;
     const gc_sections = options.gc_sections orelse !is_debug_build;
+    const wants_deterministic_uuid = !is_debug_build;
 
     const id_symlink_basename = "zld.id";
 
@@ -3990,7 +3956,17 @@ pub fn linkWithZld(macho_file: *MachO, comp: *Compilation, prog_node: *std.Progr
 
         var ncmds: u32 = 0;
 
-        try zld.writeLinkeditSegmentData(&ncmds, lc_writer, reverse_lookups);
+        try zld.writeDyldInfoData(&ncmds, lc_writer, reverse_lookups);
+        try zld.writeFunctionStarts(&ncmds, lc_writer);
+        try zld.writeDataInCode(&ncmds, lc_writer);
+
+        const stabs_pos = try zld.writeSymtabs(&ncmds, lc_writer, wants_deterministic_uuid);
+
+        {
+            // Update __LINKEDIT segment
+            const seg = zld.getLinkeditSegmentPtr();
+            seg.vmsize = mem.alignForwardGeneric(u64, seg.filesize, zld.page_size);
+        }
 
         // If the last section of __DATA segment is zerofill section, we need to ensure
         // that the free space between the end of the last non-zerofill section of __DATA
@@ -4038,14 +4014,14 @@ pub fn linkWithZld(macho_file: *MachO, comp: *Compilation, prog_node: *std.Progr
             const index = lc_buffer.items.len;
             var uuid_buf: [16]u8 = [_]u8{0} ** 16;
 
-            if (zld.options.optimize_mode == .Debug) {
+            if (!wants_deterministic_uuid) {
                 // In Debug we don't really care about reproducibility, so put in a random value
                 // and be done with it.
                 std.crypto.random.bytes(&uuid_buf);
             }
 
             try load_commands.writeUuidLC(&uuid_buf, &ncmds, lc_writer);
-            break :blk if (zld.options.optimize_mode == .Debug) null else index;
+            break :blk if (!wants_deterministic_uuid) null else index;
         };
 
         try load_commands.writeLoadDylibLCs(zld.dylibs.items, zld.referenced_dylibs.keys(), &ncmds, lc_writer);
@@ -4079,12 +4055,15 @@ pub fn linkWithZld(macho_file: *MachO, comp: *Compilation, prog_node: *std.Progr
         try zld.file.pwriteAll(lc_buffer.items, @sizeOf(macho.mach_header_64) + headers_buf.items.len);
         try zld.writeHeader(ncmds, @intCast(u32, lc_buffer.items.len + headers_buf.items.len));
 
-        if (uuid_offset_backpatch) |backpatch| {
+        if (wants_deterministic_uuid) {
             const seg = zld.getLinkeditSegmentPtr();
             const file_size = seg.fileoff + seg.filesize;
             var uuid_buf: [16]u8 = undefined;
-            try uuid.calcUuidParallel(comp, zld.file, file_size, &uuid_buf);
-            const offset = @sizeOf(macho.mach_header_64) + headers_buf.items.len + backpatch + @sizeOf(macho.load_command);
+            try uuid.calcUuidParallel(comp, zld.file, file_size, &uuid_buf, .{
+                .stabs_pos = stabs_pos,
+            });
+            const offset = @sizeOf(macho.mach_header_64) + headers_buf.items.len +
+                uuid_offset_backpatch.? + @sizeOf(macho.load_command);
             try zld.file.pwriteAll(&uuid_buf, offset);
         }
 
