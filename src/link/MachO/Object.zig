@@ -142,6 +142,7 @@ pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch)
         else => {},
     } else return;
 
+    log.warn("parsing object {s}", .{self.name});
     self.in_symtab = @ptrCast(
         [*]const macho.nlist_64,
         @alignCast(@alignOf(macho.nlist_64), &self.contents[symtab.symoff]),
