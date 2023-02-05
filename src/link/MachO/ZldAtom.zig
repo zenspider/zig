@@ -465,7 +465,7 @@ pub fn resolveRelocs(
     zld: *Zld,
     atom_index: AtomIndex,
     atom_code: []u8,
-    atom_relocs: []align(1) const macho.relocation_info,
+    atom_relocs: []const macho.relocation_info,
     reverse_lookup: []u32,
 ) !void {
     const arch = zld.options.target.cpu.arch;
@@ -540,7 +540,7 @@ fn resolveRelocsArm64(
     zld: *Zld,
     atom_index: AtomIndex,
     atom_code: []u8,
-    atom_relocs: []align(1) const macho.relocation_info,
+    atom_relocs: []const macho.relocation_info,
     reverse_lookup: []u32,
     context: RelocContext,
 ) !void {
@@ -579,7 +579,6 @@ fn resolveRelocsArm64(
         }
 
         const target = parseRelocTarget(zld, atom_index, rel, reverse_lookup);
-        const rel_offset = @intCast(u32, rel.r_address - context.base_offset);
 
         log.debug("  RELA({s}) @ {x} => %{d} ('{s}') in object({?})", .{
             @tagName(rel_type),
@@ -589,6 +588,7 @@ fn resolveRelocsArm64(
             target.file,
         });
 
+        const rel_offset = @intCast(u32, rel.r_address - context.base_offset);
         const source_addr = blk: {
             const source_sym = zld.getSymbol(atom.getSymbolWithLoc());
             break :blk source_sym.n_value + rel_offset;
@@ -596,7 +596,7 @@ fn resolveRelocsArm64(
         const is_tlv = is_tlv: {
             const source_sym = zld.getSymbol(atom.getSymbolWithLoc());
             const header = zld.sections.items(.header)[source_sym.n_sect - 1];
-            break :is_tlv header.@"type"() == macho.S_THREAD_LOCAL_VARIABLES;
+            break :is_tlv header.type() == macho.S_THREAD_LOCAL_VARIABLES;
         };
         const target_addr = try getRelocTargetAddress(zld, rel, target, is_tlv);
 
@@ -831,7 +831,7 @@ fn resolveRelocsX86(
     zld: *Zld,
     atom_index: AtomIndex,
     atom_code: []u8,
-    atom_relocs: []align(1) const macho.relocation_info,
+    atom_relocs: []const macho.relocation_info,
     reverse_lookup: []u32,
     context: RelocContext,
 ) !void {
@@ -877,7 +877,7 @@ fn resolveRelocsX86(
         const is_tlv = is_tlv: {
             const source_sym = zld.getSymbol(atom.getSymbolWithLoc());
             const header = zld.sections.items(.header)[source_sym.n_sect - 1];
-            break :is_tlv header.@"type"() == macho.S_THREAD_LOCAL_VARIABLES;
+            break :is_tlv header.type() == macho.S_THREAD_LOCAL_VARIABLES;
         };
 
         log.debug("    | source_addr = 0x{x}", .{source_addr});
@@ -1015,27 +1015,24 @@ pub fn getAtomCode(zld: *Zld, atom_index: AtomIndex) []const u8 {
     return code[offset..][0..code_len];
 }
 
-pub fn getAtomRelocs(zld: *Zld, atom_index: AtomIndex) []align(1) const macho.relocation_info {
+pub fn getAtomRelocs(zld: *Zld, atom_index: AtomIndex) []const macho.relocation_info {
     const atom = zld.getAtomPtr(atom_index);
     assert(atom.getFile() != null); // Synthetic atom shouldn't need to unique for relocs.
     const object = zld.objects.items[atom.getFile().?];
 
-    const source_sect = if (object.getSourceSymbol(atom.sym_index)) |source_sym| blk: {
-        const source_sect = object.getSourceSection(source_sym.n_sect - 1);
-        assert(!source_sect.isZerofill());
-        break :blk source_sect;
+    const source_sect_id = if (object.getSourceSymbol(atom.sym_index)) |source_sym| blk: {
+        break :blk source_sym.n_sect - 1;
     } else blk: {
         // If there was no matching symbol present in the source symtab, this means
         // we are dealing with either an entire section, or part of it, but also
         // starting at the beginning.
         const nbase = @intCast(u32, object.in_symtab.?.len);
         const sect_id = @intCast(u16, atom.sym_index - nbase);
-        const source_sect = object.getSourceSection(sect_id);
-        assert(!source_sect.isZerofill());
-        break :blk source_sect;
+        break :blk sect_id;
     };
-
-    const relocs = object.getRelocs(source_sect);
+    const source_sect = object.getSourceSection(source_sect_id);
+    assert(!source_sect.isZerofill());
+    const relocs = object.getRelocs(source_sect_id);
 
     if (atom.cached_relocs_start == -1) {
         const indexes = if (object.getSourceSymbol(atom.sym_index)) |source_sym| blk: {
