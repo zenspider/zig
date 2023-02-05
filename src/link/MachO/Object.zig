@@ -142,10 +142,7 @@ pub fn parse(self: *Object, allocator: Allocator, cpu_arch: std.Target.Cpu.Arch)
         else => {},
     } else return;
 
-    self.in_symtab = @ptrCast(
-        [*]const macho.nlist_64,
-        @alignCast(@alignOf(macho.nlist_64), &self.contents[symtab.symoff]),
-    )[0..symtab.nsyms];
+    self.in_symtab = @ptrCast([*]align(1) const macho.nlist_64, self.contents.ptr + symtab.symoff)[0..symtab.symoff];
     self.in_strtab = self.contents[symtab.stroff..][0..symtab.strsize];
 
     self.symtab = try allocator.alloc(macho.nlist_64, self.in_symtab.?.len + nsects);
@@ -851,6 +848,7 @@ pub fn parseDataInCode(self: Object) ?[]const macho.data_in_code_entry {
             .DATA_IN_CODE => {
                 const dice = cmd.cast(macho.linkedit_data_command).?;
                 const ndice = @divExact(dice.datasize, @sizeOf(macho.data_in_code_entry));
+                // return @ptrCast([*]align(1) const macho.data_in_code_entry, self.contents.ptr + dice.dataoff)[0..ndice ];
                 return @ptrCast(
                     [*]const macho.data_in_code_entry,
                     @alignCast(@alignOf(macho.data_in_code_entry), &self.contents[dice.dataoff]),
